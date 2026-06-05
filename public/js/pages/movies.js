@@ -16,6 +16,8 @@ createApp({
       isLoading: false,
       searchError: null,
       searchTimeout: null,
+      moviesFromCache: false,
+      searchFromCache: false,
     };
   },
   computed: {
@@ -26,26 +28,18 @@ createApp({
       return rows.sort((a, b) => b.heat - a.heat);
     },
     displayedMovies() {
-      console.log("计算displayedMovies...");
-      console.log("searchResult存在:", !!this.searchResult);
-      console.log("searchResult.movies数量:", this.searchResult?.movies?.length || 0);
-      console.log("sortedMovies数量:", this.sortedMovies.length);
-      
-      const result = this.searchResult?.movies?.length ? this.searchResult.movies : this.sortedMovies;
-      console.log("displayedMovies返回数量:", result.length);
-      return result;
+      return this.searchResult?.movies?.length ? this.searchResult.movies : this.sortedMovies;
     },
     showSearchResults() {
-      const result = this.searchResult && this.searchQuery.trim();
-      console.log("showSearchResults:", result);
-      return result;
+      return Boolean(this.searchResult && this.searchQuery.trim());
     },
     searchSummary() {
       if (!this.searchResult || !this.searchQuery.trim()) return "";
       const movieCount = this.searchResult.movies?.length || 0;
       const cinemaCount = this.searchResult.cinemas?.length || 0;
-      return `找到 ${movieCount} 部影片和 ${cinemaCount} 家影院`;
-    }
+      const cacheHint = this.searchFromCache ? "（Redis 缓存命中）" : "";
+      return `找到 ${movieCount} 部影片和 ${cinemaCount} 家影院${cacheHint}`;
+    },
   },
   async mounted() {
     await Promise.all([this.loadMovies(), this.loadCinemas()]);
@@ -54,7 +48,9 @@ createApp({
     posterStyle,
     async loadMovies() {
       try {
-        this.movies = (await apiFetch("/api/movies")).movies;
+        const payload = await apiFetch("/api/movies");
+        this.movies = payload.movies;
+        this.moviesFromCache = Boolean(payload.cached);
       } catch (error) {
         console.error("加载影片失败:", error);
       }
@@ -68,52 +64,40 @@ createApp({
     },
     async runSearch() {
       this.searchError = null;
-      
-      console.log("runSearch被调用，搜索词:", this.searchQuery);
-      
+      this.searchFromCache = false;
+
       if (!this.searchQuery.trim()) {
-        console.log("搜索词为空，清除结果");
         this.searchResult = null;
         return;
       }
-      
+
       this.isLoading = true;
-      console.log("设置isLoading为true");
-      
       try {
-        console.log("开始搜索:", this.searchQuery);
         const url = `/api/search?q=${encodeURIComponent(this.searchQuery.trim())}`;
-        console.log("API URL:", url);
-        
-        this.searchResult = await apiFetch(url);
-        console.log("搜索成功，结果:", this.searchResult);
-        console.log("找到影片数量:", this.searchResult.movies?.length || 0);
-        console.log("找到影院数量:", this.searchResult.cinemas?.length || 0);
+        const payload = await apiFetch(url);
+        this.searchResult = payload;
+        this.searchFromCache = Boolean(payload.cached);
       } catch (error) {
         console.error("搜索失败:", error);
         this.searchError = `搜索失败: ${error.message}`;
         this.searchResult = null;
       } finally {
         this.isLoading = false;
-        console.log("设置isLoading为false");
       }
     },
     clearSearch() {
       this.searchQuery = "";
       this.searchResult = null;
       this.searchError = null;
+      this.searchFromCache = false;
     },
-    
-    // 搜索输入处理，添加防抖
-    onSearchInput(event) {
-      console.log("搜索输入变化:", event.target.value);
-      // 简单防抖，300ms后执行搜索
+    onSearchInput() {
       if (this.searchTimeout) {
         clearTimeout(this.searchTimeout);
       }
-      
+
       this.searchTimeout = setTimeout(() => {
-        if (this.searchQuery.trim().length >= 2) { // 至少2个字符才搜索
+        if (this.searchQuery.trim().length >= 2) {
           this.runSearch();
         } else if (this.searchQuery.trim().length === 0) {
           this.clearSearch();

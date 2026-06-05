@@ -118,3 +118,24 @@ test("movie search remains available for the customer side", async () => {
     await store.close();
   }
 });
+
+test("movies list cache returns the full catalog on repeated requests", async () => {
+  await store.connect();
+  await store.invalidateBrowseCache();
+  const server = await listen();
+
+  try {
+    const first = await request(server, "/api/movies");
+    assert.equal(first.response.status, 200);
+    const total = first.body.movies.length;
+    assert.ok(total >= 1);
+
+    const second = await request(server, "/api/movies");
+    assert.equal(second.response.status, 200);
+    assert.equal(second.body.movies.length, total);
+    assert.equal(second.body.cached, true);
+  } finally {
+    server.close();
+    await store.close();
+  }
+});

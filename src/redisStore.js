@@ -1,5 +1,56 @@
 const { createClient } = require("redis");
 
+// 缓存指标跟踪类
+class CacheMetrics {
+  constructor() {
+    this.hits = {
+      hot_movies: 0,
+      search: 0,
+      cinemas: 0,
+      movie: 0,
+      redis: 0,
+      memory: 0
+    };
+    this.misses = {
+      hot_movies: 0,
+      search: 0,
+      cinemas: 0,
+      movie: 0
+    };
+  }
+
+  recordCacheHit(type, isRedis = true) {
+    this.hits[type] = (this.hits[type] || 0) + 1;
+    if (isRedis) {
+      this.hits.redis++;
+    } else {
+      this.hits.memory++;
+    }
+  }
+
+  recordCacheMiss(type) {
+    this.misses[type] = (this.misses[type] || 0) + 1;
+  }
+
+  getStats() {
+    const totalHits = Object.values(this.hits).reduce((a, b) => a + b, 0) - this.hits.redis - this.hits.memory;
+    const totalRequests = totalHits + Object.values(this.misses).reduce((a, b) => a + b, 0);
+    
+    return {
+      hits: { ...this.hits },
+      misses: { ...this.misses },
+      hitRate: totalRequests > 0 ? (totalHits / totalRequests) * 100 : 0,
+      redisHitRatio: (this.hits.redis + this.hits.memory) > 0 ? 
+        (this.hits.redis / (this.hits.redis + this.hits.memory)) * 100 : 0
+    };
+  }
+
+  reset() {
+    this.hits = { hot_movies: 0, search: 0, cinemas: 0, movie: 0, redis: 0, memory: 0 };
+    this.misses = { hot_movies: 0, search: 0, cinemas: 0, movie: 0 };
+  }
+}
+
 class RedisStore {
   constructor(logger) {
     this.logger = logger;
@@ -7,6 +58,21 @@ class RedisStore {
     this.mode = "memory";
     this.memoryLocks = new Map();
     this.memoryEvents = [];
+    // 内存缓存作为降级
+    this.memoryCache = new Map();
+    // 缓存指标跟踪
+    this.metrics = new CacheMetrics();
+    this.metricsReporter = null;
+  }
+
+  setMetricsReporter(reporter) {
+    this.metricsReporter = typeof reporter === "function" ? reporter : null;
+  }
+
+  emitMetric(type, event, backend = "redis") {
+    if (this.metricsReporter) {
+      this.metricsReporter(type, event, backend);
+    }
   }
 
   async connect() {
@@ -127,6 +193,283 @@ class RedisStore {
       }));
     }
     return this.memoryEvents.slice(0, limit);
+  }
+
+  // ==================== 缓存功能 ====================
+  
+  // 生成缓存键
+  cacheKey(type, identifier) {
+    return `cache:${type}:${identifier}`;
+  }
+
+  // 设置缓存
+  async setCache(type, identifier, data, ttlSeconds = 300) { // 默认5分钟
+    const key = this.cacheKey(type, identifier);
+    const value = JSON.stringify({
+      data,
+      cachedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + ttlSeconds * 1000).toISOString()
+    });
+
+    if (this.client) {
+      try {
+        await this.client.set(key, value, { EX: ttlSeconds });
+        this.logger.debug({ type, identifier, ttlSeconds }, "缓存已设置到Redis");
+      } catch (error) {
+        this.logger.warn({ error: error.message, key }, "Redis缓存设置失败，使用内存缓存");
+        this.setMemoryCache(key, value);
+      }
+    } else {
+      this.setMemoryCache(key, value);
+    }
+  }
+
+  // 获取缓存（带指标跟踪，Redis 未命中时回退内存二级缓存）
+  async getCache(type, identifier, trackMetrics = true) {
+    const key = this.cacheKey(type, identifier);
+    let cachedValue = null;
+    let hitBackend = "memory";
+
+    if (this.client) {
+      try {
+        cachedValue = await this.client.get(key);
+        if (cachedValue) {
+          hitBackend = "redis";
+        } else {
+          cachedValue = this.getMemoryCache(key);
+          if (cachedValue) {
+            hitBackend = "memory";
+          }
+        }
+      } catch (error) {
+        this.logger.warn({ error: error.message, key }, "Redis缓存获取失败，尝试内存缓存");
+        cachedValue = this.getMemoryCache(key);
+        if (cachedValue) {
+          hitBackend = "memory";
+        }
+      }
+    } else {
+      cachedValue = this.getMemoryCache(key);
+      if (cachedValue) {
+        hitBackend = "memory";
+      }
+    }
+
+    if (!cachedValue) {
+      if (trackMetrics && this.metrics) {
+        this.metrics.recordCacheMiss(type);
+        this.emitMetric(type, "miss", this.mode);
+      }
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(cachedValue);
+      if (new Date(parsed.expiresAt) <= new Date()) {
+        await this.deleteCache(type, identifier);
+        if (trackMetrics && this.metrics) {
+          this.metrics.recordCacheMiss(type);
+          this.emitMetric(type, "miss", hitBackend);
+        }
+        return null;
+      }
+
+      if (trackMetrics && this.metrics) {
+        this.metrics.recordCacheHit(type, hitBackend === "redis");
+        this.emitMetric(type, "hit", hitBackend);
+      }
+      return parsed.data;
+    } catch (error) {
+      this.logger.warn({ error: error.message, key }, "缓存数据解析失败");
+      if (trackMetrics && this.metrics) {
+        this.metrics.recordCacheMiss(type);
+        this.emitMetric(type, "miss", hitBackend);
+      }
+      return null;
+    }
+  }
+
+  // 删除缓存
+  async deleteCache(type, identifier) {
+    const key = this.cacheKey(type, identifier);
+    
+    if (this.client) {
+      try {
+        await this.client.del(key);
+      } catch (error) {
+        this.logger.warn({ error: error.message, key }, "Redis缓存删除失败");
+      }
+    }
+    
+    this.deleteMemoryCache(key);
+  }
+
+  // 清空特定类型的缓存
+  async clearCacheType(type) {
+    if (this.client) {
+      try {
+        const keys = await this.client.keys(`cache:${type}:*`);
+        if (keys.length > 0) {
+          await this.client.del(keys);
+          this.logger.info({ type, count: keys.length }, "清空缓存类型");
+        }
+      } catch (error) {
+        this.logger.warn({ error: error.message, type }, "清空缓存类型失败");
+      }
+    }
+    
+    // 同时清空内存缓存
+    for (const key of this.memoryCache.keys()) {
+      if (key.startsWith(`cache:${type}:`)) {
+        this.memoryCache.delete(key);
+      }
+    }
+  }
+
+  // 内存缓存辅助方法
+  setMemoryCache(key, value) {
+    this.memoryCache.set(key, value);
+  }
+
+  getMemoryCache(key) {
+    const value = this.memoryCache.get(key);
+    if (value) {
+      try {
+        const parsed = JSON.parse(value);
+        if (new Date(parsed.expiresAt) <= new Date()) {
+          this.memoryCache.delete(key);
+          return null;
+        }
+      } catch (error) {
+        this.memoryCache.delete(key);
+        return null;
+      }
+    }
+    return value;
+  }
+
+  deleteMemoryCache(key) {
+    this.memoryCache.delete(key);
+  }
+
+  // 清理过期的内存缓存
+  cleanupMemoryCache() {
+    const now = new Date();
+    for (const [key, value] of this.memoryCache) {
+      try {
+        const parsed = JSON.parse(value);
+        if (new Date(parsed.expiresAt) <= now) {
+          this.memoryCache.delete(key);
+        }
+      } catch (error) {
+        this.memoryCache.delete(key);
+      }
+    }
+  }
+
+  // ==================== 具体业务缓存方法 ====================
+
+  static BROWSE_CACHE_TYPES = ["movies", "hot_movies", "cinemas", "search", "movie"];
+
+  // 全量影片列表（影片浏览页主数据）
+  async cacheMoviesList(movies, ttlSeconds = 600) {
+    await this.setCache("movies", "all", movies, ttlSeconds);
+  }
+
+  async getMoviesList() {
+    return await this.getCache("movies", "all");
+  }
+
+  // 热门影片 Top N（按热度排序）
+  async cacheHotMovies(movies, ttlSeconds = 600) {
+    await this.setCache("hot_movies", "all", movies, ttlSeconds);
+  }
+
+  async getHotMovies() {
+    return await this.getCache("hot_movies", "all");
+  }
+
+  async warmBrowseCache(movies, cinemas, hotLimit = 10) {
+    await this.cacheMoviesList(movies);
+    await this.cacheCinemas(cinemas);
+    const hotMovies = [...movies].sort((a, b) => b.heat - a.heat).slice(0, hotLimit);
+    await this.cacheHotMovies(hotMovies);
+    this.logger.info(
+      { movies: movies.length, cinemas: cinemas.length, hotMovies: hotMovies.length },
+      "browse cache warmed",
+    );
+  }
+
+  async invalidateBrowseCache() {
+    const types = ["movies", "hot_movies", "cinemas", "search"];
+    for (const type of types) {
+      await this.clearCacheType(type);
+    }
+    this.logger.info({ types }, "browse cache invalidated");
+  }
+
+  // 搜索结果缓存
+  async cacheSearchResults(query, results, ttlSeconds = 300) { // 默认5分钟
+    const normalizedQuery = query.trim().toLowerCase();
+    await this.setCache('search', normalizedQuery, results, ttlSeconds);
+  }
+
+  async getSearchResults(query) {
+    const normalizedQuery = query.trim().toLowerCase();
+    return await this.getCache('search', normalizedQuery);
+  }
+
+  // 影院信息缓存
+  async cacheCinemas(cinemas, ttlSeconds = 1800) { // 默认30分钟
+    await this.setCache('cinemas', 'all', cinemas, ttlSeconds);
+  }
+
+  async getCinemas() {
+    return await this.getCache('cinemas', 'all');
+  }
+
+  // 单个影片缓存
+  async cacheMovie(movieId, movieData, ttlSeconds = 1800) { // 默认30分钟
+    await this.setCache('movie', movieId, movieData, ttlSeconds);
+  }
+
+  async getMovie(movieId) {
+    return await this.getCache('movie', movieId);
+  }
+
+  // 获取缓存统计信息
+  async getCacheStats() {
+    const stats = {
+      mode: this.mode,
+      memoryCacheSize: this.memoryCache.size,
+      metrics: this.metrics.getStats()
+    };
+
+    if (this.client) {
+      try {
+        const info = await this.client.info('memory');
+        stats.redisMemory = info.split('\r\n').find(line => line.startsWith('used_memory:'))?.split(':')[1];
+        
+        // 获取各种缓存类型的数量
+        const cacheTypes = RedisStore.BROWSE_CACHE_TYPES;
+        for (const type of cacheTypes) {
+          const keys = await this.client.keys(`cache:${type}:*`);
+          stats[`${type}_count`] = keys.length;
+        }
+
+        // 获取更多Redis信息
+        try {
+          const dbsize = await this.client.dbSize();
+          stats.redisKeyCount = dbsize;
+        } catch (e) {
+          // 忽略错误
+        }
+      } catch (error) {
+        stats.redisError = error.message;
+      }
+    }
+
+    return stats;
   }
 
   async close() {

@@ -41,6 +41,9 @@ const logger = {
   error(messageOrFields, message) {
     writeLog("error", messageOrFields, message);
   },
+  debug(messageOrFields, message) {
+    writeLog("debug", messageOrFields, message);
+  },
 };
 
 function writeLog(level, messageOrFields, message) {
@@ -77,6 +80,29 @@ const elasticsearchModeGauge = new promClient.Gauge({
   name: "cinema_elasticsearch_mode",
   help: "1 when Elasticsearch is connected, 0 when memory fallback is active",
 });
+// 缓存相关指标
+const cacheHits = new promClient.Counter({
+  name: "cinema_cache_hits_total",
+  help: "Total number of cache hits",
+  labelNames: ["type"],
+});
+const cacheMisses = new promClient.Counter({
+  name: "cinema_cache_misses_total",
+  help: "Total number of cache misses",
+  labelNames: ["type"],
+});
+const cacheSizeGauge = new promClient.Gauge({
+  name: "cinema_cache_memory_size",
+  help: "Number of items in memory cache",
+});
+
+store.setMetricsReporter((type, event) => {
+  if (event === "hit") {
+    cacheHits.labels(type).inc();
+  } else {
+    cacheMisses.labels(type).inc();
+  }
+});
 
 app.use(express.json());
 app.use((req, res, next) => {
@@ -92,13 +118,28 @@ app.use(express.static(path.join(__dirname, "..", "public")));
 app.use("/vendor/vue.global.prod.js", express.static(path.join(__dirname, "..", "node_modules", "vue", "dist", "vue.global.prod.js")));
 app.use("/vendor/echarts.min.js", express.static(path.join(__dirname, "..", "node_modules", "echarts", "dist", "echarts.min.js")));
 
-app.get("/api/health", (_req, res) => {
+app.get("/api/health", async (_req, res) => {
   redisModeGauge.set(store.mode === "redis" ? 1 : 0);
   elasticsearchModeGauge.set(searchService.mode === "elasticsearch" ? 1 : 0);
+  
+  // 获取缓存统计信息
+  let cacheStats = {};
+  try {
+    cacheStats = await store.getCacheStats();
+  } catch (error) {
+    logger.warn({ error: error.message }, "获取缓存统计失败");
+  }
+  
   res.json({
     status: "UP",
     redis: store.mode,
     elasticsearch: searchService.mode,
+    cache: {
+      mode: cacheStats.mode || "unknown",
+      memorySize: cacheStats.memoryCacheSize || 0,
+      hitRate: cacheStats.metrics?.hitRate ?? 0,
+      enabled: true,
+    },
     mq: store.mode === "redis" ? "Redis List queue: cinema-booking-events" : "in-memory event queue",
     search: searchService.mode === "elasticsearch" ? "Elasticsearch indices: movies, cinemas" : "in-memory fallback",
     time: new Date().toISOString(),
@@ -130,18 +171,86 @@ app.get("/api/me", requireAuth(), (req, res) => {
   res.json({ user: req.user });
 });
 
-app.get("/api/movies", (_req, res) => {
-  res.json({ movies: getMovies() });
+app.get("/api/movies", async (_req, res) => {
+  try {
+    const cachedMovies = await store.getMoviesList();
+    if (cachedMovies) {
+      logger.debug("从缓存获取影片列表");
+      res.json({ movies: cachedMovies, cached: true, source: store.mode });
+      return;
+    }
+
+    const movies = getMovies();
+    await store.cacheMoviesList(movies);
+    const hotMovies = [...movies].sort((a, b) => b.heat - a.heat).slice(0, 10);
+    await store.cacheHotMovies(hotMovies);
+    logger.debug("影片列表与热门影片已写入缓存");
+
+    res.json({ movies, cached: false, source: store.mode });
+  } catch (error) {
+    logger.error({ error: error.message }, "获取影片数据失败");
+    res.json({ movies: getMovies(), cached: false, error: "缓存服务暂时不可用" });
+  }
 });
 
-app.get("/api/cinemas", (_req, res) => {
-  res.json({ cinemas: getCinemas() });
+app.get("/api/movies/hot", async (_req, res) => {
+  try {
+    const cached = await store.getHotMovies();
+    if (cached) {
+      res.json({ movies: cached, cached: true, source: store.mode });
+      return;
+    }
+
+    const movies = getMovies();
+    const hotMovies = [...movies].sort((a, b) => b.heat - a.heat).slice(0, 10);
+    await store.cacheHotMovies(hotMovies);
+    res.json({ movies: hotMovies, cached: false, source: store.mode });
+  } catch (error) {
+    logger.error({ error: error.message }, "获取热门影片失败");
+    const hotMovies = [...getMovies()].sort((a, b) => b.heat - a.heat).slice(0, 10);
+    res.json({ movies: hotMovies, cached: false, error: "缓存服务暂时不可用" });
+  }
+});
+
+app.get("/api/cinemas", async (_req, res) => {
+  try {
+    // 首先尝试从缓存获取影院数据
+    const cachedCinemas = await store.getCinemas();
+    if (cachedCinemas) {
+      logger.debug("从缓存获取影院数据");
+      res.json({ cinemas: cachedCinemas, cached: true, source: store.mode });
+      return;
+    }
+
+    const cinemas = getCinemas();
+    await store.cacheCinemas(cinemas);
+    logger.debug("影院数据已缓存");
+
+    res.json({ cinemas, cached: false, source: store.mode });
+  } catch (error) {
+    logger.error({ error: error.message }, "获取影院数据失败");
+    // 降级：直接返回数据库数据
+    res.json({ cinemas: getCinemas(), cached: false, error: "缓存服务暂时不可用" });
+  }
 });
 
 app.get("/api/search", async (req, res) => {
   try {
     const q = String(req.query.q || "").trim();
     const limit = parseInt(req.query.limit) || 50;
+    
+    if (!q) {
+      res.json({ q, movies: [], cinemas: [] });
+      return;
+    }
+    
+    // 首先尝试从缓存获取搜索结果
+    const cachedResult = await store.getSearchResults(q);
+    if (cachedResult) {
+      logger.debug({ query: q }, "从缓存获取搜索结果");
+      res.json({ ...cachedResult, cached: true, source: store.mode });
+      return;
+    }
     
     let result;
     if (searchService.mode === 'elasticsearch') {
@@ -153,7 +262,14 @@ app.get("/api/search", async (req, res) => {
       result = searchService.searchInMemory(q, { limit }, movies, cinemas);
     }
     
-    res.json(result);
+    // 缓存搜索结果（热门搜索词缓存时间更长）
+    const isPopularQuery = ['imax', 'vip', '科幻', '滨江', '上海'].includes(q.toLowerCase());
+    const ttlSeconds = isPopularQuery ? 600 : 300; // 热门搜索10分钟，普通搜索5分钟
+    
+    await store.cacheSearchResults(q, result, ttlSeconds);
+    logger.debug({ query: q, ttlSeconds }, "搜索结果已缓存");
+    
+    res.json({ ...result, cached: false, source: store.mode });
   } catch (error) {
     logger.error({ error: error.message, query: req.query.q }, "Search failed");
     res.status(500).json({ error: "SEARCH_FAILED", message: "搜索服务暂时不可用" });
@@ -369,6 +485,7 @@ app.patch("/api/admin/shows/:showId/price", requireAuth(["ADMIN"]), async (req, 
       res.status(404).json({ error: "SHOW_NOT_FOUND" });
       return;
     }
+    await store.invalidateBrowseCache();
     const item = findShow(show.id);
     await store.publishEvent("PRICE_UPDATED", {
       showId: show.id,
@@ -377,6 +494,52 @@ app.patch("/api/admin/shows/:showId/price", requireAuth(["ADMIN"]), async (req, 
       operator: req.user.displayName,
     });
     res.json({ show: publicShow(item.movie, show) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 缓存统计API
+app.get("/api/cache/stats", async (_req, res, next) => {
+  try {
+    const cacheStats = await store.getCacheStats();
+    res.json({
+      cache: cacheStats,
+      searchMode: searchService.mode,
+      redisMode: store.mode,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 清空缓存 API（管理员使用）
+app.delete("/api/cache/clear", requireAuth(["ADMIN"]), async (_req, res, next) => {
+  try {
+    const cacheTypes = [...RedisStore.BROWSE_CACHE_TYPES];
+    for (const cacheType of cacheTypes) {
+      await store.clearCacheType(cacheType);
+    }
+    res.json({
+      message: "已清空所有缓存",
+      cleared: true,
+      types: cacheTypes,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/cache/clear/:type", requireAuth(["ADMIN"]), async (req, res, next) => {
+  try {
+    const { type } = req.params;
+    await store.clearCacheType(type);
+    res.json({
+      message: `已清空 ${type} 类型缓存`,
+      type,
+      cleared: true,
+    });
   } catch (error) {
     next(error);
   }
@@ -427,6 +590,8 @@ app.get("/api/ops/events", async (_req, res, next) => {
 
 app.get("/metrics", async (_req, res) => {
   redisModeGauge.set(store.mode === "redis" ? 1 : 0);
+  elasticsearchModeGauge.set(searchService.mode === "elasticsearch" ? 1 : 0);
+  cacheSizeGauge.set(store.memoryCache.size);
   res.set("Content-Type", promClient.register.contentType);
   res.end(await promClient.register.metrics());
 });
@@ -502,16 +667,22 @@ async function start() {
     try {
       const movies = getMovies();
       const cinemas = getCinemas();
-      
+
       await searchService.indexMovies(movies);
       await searchService.indexCinemas(cinemas);
-      
+
       logger.info("Elasticsearch data indexed successfully");
     } catch (error) {
       logger.error({ error: error.message }, "Failed to index data into Elasticsearch");
     }
   }
-  
+
+  try {
+    await store.warmBrowseCache(getMovies(), getCinemas());
+  } catch (error) {
+    logger.warn({ error: error.message }, "browse cache warm-up skipped");
+  }
+
   const port = Number(process.env.PORT || 3000);
   return app.listen(port, () => {
     logger.info(`cinema ticket system listening on http://localhost:${port}`);
