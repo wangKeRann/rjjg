@@ -44,7 +44,7 @@
           </div>
         </div>
         <section class="page-shell">
-          <div class="section-head"><div><p class="eyebrow">{{ showSearchResults ? 'Search Results' : 'Movies' }}</p><h2>{{ showSearchResults ? '搜索结果' : '热映影片' }}</h2></div><div v-if="!showSearchResults" class="segmented"><button :class="{ active: sortMode === 'heat' }" @click="sortMode='heat'">热度</button><button :class="{ active: sortMode === 'rating' }" @click="sortMode='rating'">评分</button><button :class="{ active: sortMode === 'price' }" @click="sortMode='price'">低价</button></div></div>
+          <div class="section-head"><div><p class="eyebrow">{{ showSearchResults ? 'Search Results' : 'Movies' }}</p><h2>{{ showSearchResults ? '搜索结果' : '热映影片' }}</h2><p v-if="!showSearchResults && moviesFromCache" class="tagline" style="margin-top:8px;color:#6ee7b7;">影片列表来自 Redis 缓存</p></div><div v-if="!showSearchResults" class="segmented"><button :class="{ active: sortMode === 'heat' }" @click="sortMode='heat'">热度</button><button :class="{ active: sortMode === 'rating' }" @click="sortMode='rating'">评分</button><button :class="{ active: sortMode === 'price' }" @click="sortMode='price'">低价</button></div></div>
           <div class="movie-carousel">
             <article v-for="movie in displayedMovies" :key="movie.id" class="movie-card glass" @click="book(movie)">
               <div class="poster" :style="posterStyle(movie)"><span>{{ movie.rating }}</span></div>

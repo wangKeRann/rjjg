@@ -1,8 +1,8 @@
 {
   "meta": {
     "version": 1,
-    "createdAt": "2026-06-05T04:58:03.997Z",
-    "updatedAt": "2026-06-05T13:46:53.146Z",
+    "createdAt": "2026-06-05T16:42:47.681Z",
+    "updatedAt": "2026-06-05T16:54:07.556Z",
     "source": "local persistent database"
   },
   "users": [
@@ -289,9 +289,7 @@
       "sold": [
         "B3",
         "B4",
-        "F8",
-        "A8",
-        "A7"
+        "F8"
       ]
     },
     {
@@ -520,7 +518,7 @@
   ],
   "orders": [
     {
-      "id": "ae36e6bd-ba85-43f1-b14b-62764effb0ef",
+      "id": "c6029cb3-a2d5-4aa8-9dbf-712a3d404a8f",
       "showId": "s1",
       "movieTitle": "星际回声",
       "cinema": "云上影城 · 星环店",
@@ -534,28 +532,9 @@
       "userName": "演示用户",
       "amount": 116,
       "status": "PAID",
-      "createdAt": "2026-06-05T04:58:04.229Z",
-      "expiresAt": "2026-06-05T05:00:04.229Z",
-      "paidAt": "2026-06-05T04:58:04.431Z"
-    },
-    {
-      "id": "ab23e312-446e-486b-88a5-dc947cbcd6d6",
-      "showId": "s2",
-      "movieTitle": "星际回声",
-      "cinema": "云上影城 · 滨江店",
-      "hall": "2号厅",
-      "startsAt": "2026-06-04 22:10",
-      "seats": [
-        "A8",
-        "A7"
-      ],
-      "userId": "u1002",
-      "userName": "普通用户",
-      "amount": 110,
-      "status": "PAID",
-      "createdAt": "2026-06-05T10:54:28.145Z",
-      "expiresAt": "2026-06-05T10:56:28.145Z",
-      "paidAt": "2026-06-05T10:54:30.546Z"
+      "createdAt": "2026-06-05T16:42:48.045Z",
+      "expiresAt": "2026-06-05T16:44:48.045Z",
+      "paidAt": "2026-06-05T16:42:48.342Z"
     }
   ]
 }
