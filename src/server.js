@@ -4,6 +4,7 @@ const express = require("express");
 const promClient = require("prom-client");
 const { issueSession, requireAuth, revokeSession, verifyLogin } = require("./auth");
 const RedisStore = require("./redisStore");
+const SearchService = require("./searchService");
 const {
   COLS,
   ROWS,
@@ -51,6 +52,7 @@ function writeLog(level, messageOrFields, message) {
 }
 
 const store = new RedisStore(logger);
+const searchService = new SearchService(logger);
 
 promClient.collectDefaultMetrics();
 const httpDuration = new promClient.Histogram({
@@ -71,6 +73,10 @@ const redisModeGauge = new promClient.Gauge({
   name: "cinema_redis_mode",
   help: "1 when Redis is connected, 0 when memory fallback is active",
 });
+const elasticsearchModeGauge = new promClient.Gauge({
+  name: "cinema_elasticsearch_mode",
+  help: "1 when Elasticsearch is connected, 0 when memory fallback is active",
+});
 
 app.use(express.json());
 app.use((req, res, next) => {
@@ -88,10 +94,13 @@ app.use("/vendor/echarts.min.js", express.static(path.join(__dirname, "..", "nod
 
 app.get("/api/health", (_req, res) => {
   redisModeGauge.set(store.mode === "redis" ? 1 : 0);
+  elasticsearchModeGauge.set(searchService.mode === "elasticsearch" ? 1 : 0);
   res.json({
     status: "UP",
     redis: store.mode,
+    elasticsearch: searchService.mode,
     mq: store.mode === "redis" ? "Redis List queue: cinema-booking-events" : "in-memory event queue",
+    search: searchService.mode === "elasticsearch" ? "Elasticsearch indices: movies, cinemas" : "in-memory fallback",
     time: new Date().toISOString(),
   });
 });
@@ -129,32 +138,26 @@ app.get("/api/cinemas", (_req, res) => {
   res.json({ cinemas: getCinemas() });
 });
 
-app.get("/api/search", (req, res) => {
-  const q = String(req.query.q || "").trim().toLowerCase();
-  const movies = getMovies();
-  const cinemas = getCinemas();
-  if (!q) {
-    res.json({ q, movies: [], cinemas: [] });
-    return;
+app.get("/api/search", async (req, res) => {
+  try {
+    const q = String(req.query.q || "").trim();
+    const limit = parseInt(req.query.limit) || 50;
+    
+    let result;
+    if (searchService.mode === 'elasticsearch') {
+      result = await searchService.search(q, { limit });
+    } else {
+      // 内存搜索降级
+      const movies = getMovies();
+      const cinemas = getCinemas();
+      result = searchService.searchInMemory(q, { limit }, movies, cinemas);
+    }
+    
+    res.json(result);
+  } catch (error) {
+    logger.error({ error: error.message, query: req.query.q }, "Search failed");
+    res.status(500).json({ error: "SEARCH_FAILED", message: "搜索服务暂时不可用" });
   }
-
-  const movieHits = movies.filter((movie) => {
-    const text = [
-      movie.title,
-      movie.genre,
-      movie.director,
-      movie.tagline,
-      movie.synopsis,
-      ...(movie.tags || []),
-      ...(movie.cast || []),
-      ...movie.shows.flatMap((show) => [show.cinema, show.format, show.hall, show.language]),
-    ]
-      .join(" ")
-      .toLowerCase();
-    return text.includes(q);
-  });
-  const cinemaHits = cinemas.filter((cinema) => [cinema.name, cinema.address, ...(cinema.serviceTags || [])].join(" ").toLowerCase().includes(q));
-  res.json({ q, movies: movieHits, cinemas: cinemaHits });
 });
 
 app.get("/api/infrastructure/topology", async (_req, res) => {
@@ -489,9 +492,31 @@ async function cancelOrder(order, reason) {
 async function start() {
   await store.connect();
   redisModeGauge.set(store.mode === "redis" ? 1 : 0);
+  
+  // 初始化搜索服务
+  await searchService.connect();
+  elasticsearchModeGauge.set(searchService.mode === "elasticsearch" ? 1 : 0);
+  
+  // 如果Elasticsearch连接成功，创建索引并导入数据
+  if (searchService.mode === "elasticsearch") {
+    try {
+      const movies = getMovies();
+      const cinemas = getCinemas();
+      
+      await searchService.indexMovies(movies);
+      await searchService.indexCinemas(cinemas);
+      
+      logger.info("Elasticsearch data indexed successfully");
+    } catch (error) {
+      logger.error({ error: error.message }, "Failed to index data into Elasticsearch");
+    }
+  }
+  
   const port = Number(process.env.PORT || 3000);
   return app.listen(port, () => {
     logger.info(`cinema ticket system listening on http://localhost:${port}`);
+    logger.info(`Search mode: ${searchService.mode}`);
+    logger.info(`Redis mode: ${store.mode}`);
   });
 }
 
@@ -504,4 +529,5 @@ module.exports = {
   start,
   store,
   orders,
+  searchService,
 };

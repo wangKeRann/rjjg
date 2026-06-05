@@ -23,11 +23,28 @@
           <label>城市<select v-model="filters.city"><option>上海</option><option>杭州</option><option>南京</option></select></label>
           <label>日期<select v-model="filters.date"><option>今天 06-04</option><option>明天 06-05</option><option>周六 06-06</option></select></label>
           <label>影院<select v-model="filters.cinema"><option value="">全部影院</option><option v-for="cinema in cinemas" :key="cinema.name" :value="cinema.name">{{ cinema.name }}</option></select></label>
-          <label>搜索<input v-model="searchQuery" @keyup.enter="runSearch" placeholder="IMAX / VIP / 影片名" /></label>
-          <button @click="runSearch">搜索</button>
+          <label style="flex: 2;">搜索<input v-model="searchQuery" @keyup.enter="runSearch" @input="onSearchInput" placeholder="IMAX / VIP / 影片名" style="width: 100%;" /></label>
+          <button @click="runSearch" :disabled="isLoading" style="min-width: 80px;">{{ isLoading ? '搜索中...' : '搜索' }}</button>
+          <button v-if="showSearchResults" @click="clearSearch" class="ghost" style="min-width: 60px;">清除</button>
         </section>
+        
+        <div v-if="searchError" class="error-message glass" style="margin: 20px auto; max-width: 800px; padding: 15px; color: #ff6b6b; border-left: 4px solid #ff6b6b;">
+          {{ searchError }}
+        </div>
+        
+        <div v-if="showSearchResults" class="search-results-header glass" style="margin: 20px auto; max-width: 800px; padding: 15px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+              <h3 style="margin: 0;">搜索结果</h3>
+              <p style="margin: 5px 0 0 0; color: #8899aa;">{{ searchSummary }}</p>
+            </div>
+            <div style="font-size: 14px; color: #8899aa;">
+              搜索词: "{{ searchQuery }}"
+            </div>
+          </div>
+        </div>
         <section class="page-shell">
-          <div class="section-head"><div><p class="eyebrow">Movies</p><h2>热映影片</h2></div><div class="segmented"><button :class="{ active: sortMode === 'heat' }" @click="sortMode='heat'">热度</button><button :class="{ active: sortMode === 'rating' }" @click="sortMode='rating'">评分</button><button :class="{ active: sortMode === 'price' }" @click="sortMode='price'">低价</button></div></div>
+          <div class="section-head"><div><p class="eyebrow">{{ showSearchResults ? 'Search Results' : 'Movies' }}</p><h2>{{ showSearchResults ? '搜索结果' : '热映影片' }}</h2></div><div v-if="!showSearchResults" class="segmented"><button :class="{ active: sortMode === 'heat' }" @click="sortMode='heat'">热度</button><button :class="{ active: sortMode === 'rating' }" @click="sortMode='rating'">评分</button><button :class="{ active: sortMode === 'price' }" @click="sortMode='price'">低价</button></div></div>
           <div class="movie-carousel">
             <article v-for="movie in displayedMovies" :key="movie.id" class="movie-card glass" @click="book(movie)">
               <div class="poster" :style="posterStyle(movie)"><span>{{ movie.rating }}</span></div>
