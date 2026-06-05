@@ -1,0 +1,13 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: "cinema-web"
+    static_configs:
+      - targets:
+          - "cinema-web-a:3000"
+          - "cinema-web-b:3000"
+  - job_name: "flask-recommender"
+    static_configs:
+      - targets:
+          - "flask-recommender:5000"

@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>订单支付 - 影院订票系统</title><link rel="stylesheet" href="/styles.css" /></head>
+  <body>
+    <div id="app" v-cloak><div class="ambient ambient-a"></div><div class="ambient ambient-b"></div>
+      <header class="nav-shell glass"><div class="brand"><span class="brand-mark">C</span><div><strong>CinemaOS</strong><small>订单与支付页</small></div></div><nav class="nav-links"><template v-if="session && session.user.role === 'ADMIN'"><a href="/admin-shows.html">调价</a><a href="/admin-sales.html">统计</a><a href="/ops.html">运维</a></template><template v-else-if="session && session.user.role === 'CUSTOMER'"><a href="/movies.html">影片</a><a href="/booking.html">选座</a><a href="/orders.html">订单</a></template><a v-else href="/login.html">登录</a></nav><div class="account-actions"><span v-if="session">{{ session.user.displayName }}</span><button v-if="session" class="login-button ghost" @click="logout">退出</button></div></header>
+      <main><section class="hero compact-hero"><img class="hero-art" src="/assets/cinema-collage.png" /><div class="hero-overlay"></div><div class="hero-content"><p class="eyebrow">Member D</p><h1>订单支付页</h1><p>查看个人订单，继续支付待支付订单。</p></div></section>
+        <section class="page-shell"><div class="section-head"><div><p class="eyebrow">Orders</p><h2>我的订单</h2></div><button class="ghost-button" @click="loadOrders">刷新订单</button></div><p class="login-hint" v-if="!isCustomer">请先使用用户账号登录。</p><div class="admin-table glass-soft"><div class="table-row table-head order-table"><span>订单</span><span>影片</span><span>影院</span><span>座位</span><span>金额</span><span>状态/操作</span></div><div class="table-row order-table" v-for="order in orders" :key="order.id"><span>{{ order.id.slice(0, 8) }}</span><span>{{ order.movieTitle }}</span><span>{{ order.cinema }}</span><span>{{ order.seats.join(', ') }}</span><span>￥{{ order.amount }}</span><span><strong>{{ order.status }}</strong><button v-if="order.status === 'PENDING_PAYMENT'" @click="pay(order)">支付</button></span></div><p class="empty-state" v-if="!orders.length">暂无订单，请先到选座页购票。</p></div><p class="notice" v-if="notice">{{ notice }}</p></section>
+      </main>
+    </div>
+    <script src="/vendor/vue.global.prod.js"></script><script type="module" src="/js/pages/orders.js"></script>
+  </body>
+</html>

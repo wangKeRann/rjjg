@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cinema-architecture-notes
+data:
+  stack: "Redis, RabbitMQ, Elasticsearch, Nacos, Sentinel, ZooKeeper, Prometheus"
+  database: "write-db/read-db split by DynamicDataSource"
+  logging: "Slf4j + logback in Spring service"

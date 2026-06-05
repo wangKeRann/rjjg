@@ -1,0 +1,20 @@
+{
+  "name": "cinema-ticket-availability-demo",
+  "version": "1.0.0",
+  "description": "Cinema ticket booking architecture demo for software architecture final project.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "echarts": "^6.1.0",
+    "express": "^5.2.1",
+    "prom-client": "^15.1.3",
+    "redis": "^6.0.0",
+    "vue": "^3.5.35"
+  }
+}

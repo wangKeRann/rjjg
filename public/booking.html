@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>选座购票 - 影院订票系统</title><link rel="stylesheet" href="/styles.css" /></head>
+  <body>
+    <div id="app" v-cloak>
+      <div class="ambient ambient-a"></div><div class="ambient ambient-b"></div>
+      <header class="nav-shell glass"><div class="brand"><span class="brand-mark">C</span><div><strong>CinemaOS</strong><small>场次与选座购票页</small></div></div><nav class="nav-links"><template v-if="session && session.user.role === 'ADMIN'"><a href="/admin-shows.html">调价</a><a href="/admin-sales.html">统计</a><a href="/ops.html">运维</a></template><template v-else-if="session && session.user.role === 'CUSTOMER'"><a href="/movies.html">影片</a><a href="/booking.html">选座</a><a href="/orders.html">订单</a></template><a v-else href="/login.html">登录</a></nav><div class="account-actions"><span v-if="session">{{ session.user.displayName }}</span><button v-if="session" class="login-button ghost" @click="logout">退出</button></div></header>
+      <main>
+        <section class="hero compact-hero"><img class="hero-art" src="/assets/cinema-collage.png" alt="选座" /><div class="hero-overlay"></div><div class="hero-content"><p class="eyebrow">Member C</p><h1>场次与选座购票页</h1><p>选择场次、座位，提交订单并确认支付。</p></div></section>
+        <section class="page-shell booking-grid">
+          <section class="glass booking-main">
+            <div class="section-head compact"><div><p class="eyebrow">Booking</p><h2>{{ selectedMovie?.title || '请选择影片' }}</h2></div><span class="status-chip">{{ currentShow?.format || '未选择场次' }}</span></div>
+            <div class="show-list"><button v-for="show in allShows" :key="show.id" class="show-option" :class="{ active: selectedShowId === show.id }" @click="selectShow(show.id)"><span><strong>{{ show.startsAt.split(' ')[1] }}</strong><small>{{ show.startsAt.split(' ')[0] }}</small></span><span><strong>{{ show.movieTitle }}</strong><small>{{ show.cinema }}</small></span><span><strong>{{ show.format }}</strong><small>{{ show.language }} · {{ show.hall }}</small></span><span class="price">￥{{ show.price }}</span></button></div>
+            <div class="seat-shell"><div class="screen"><span>银幕</span></div><div class="seat-grid"><button v-for="seat in seats" :key="seat.id" class="seat" :class="[seat.status, { selected: selectedSeats.includes(seat.id) }]" :disabled="seat.status !== 'available'" @click="toggleSeat(seat.id)">{{ seat.id }}</button></div><div class="legend"><span><i class="available"></i>可选</span><span><i class="selected"></i>已选</span><span><i class="locked"></i>锁定</span><span><i class="sold"></i>已售</span></div></div>
+          </section>
+          <aside class="glass checkout-panel"><div class="section-head compact"><div><p class="eyebrow">Checkout</p><h2>订单确认</h2></div></div><div class="receipt"><p>影片 <strong>{{ currentShow?.movieTitle || '-' }}</strong></p><p>影院 <strong>{{ currentShow?.cinema || '-' }}</strong></p><p>场次 <strong>{{ currentShow?.startsAt || '-' }}</strong></p><p>座位 <strong>{{ selectedSeats.length ? selectedSeats.join(', ') : '-' }}</strong></p><p>金额 <strong>￥{{ selectedAmount }}</strong></p></div><div class="checkout-actions"><button :disabled="!selectedSeats.length || busy" @click="createOrder">提交订单并锁座</button><button class="pay" :disabled="!currentOrder || currentOrder.status !== 'PENDING_PAYMENT' || busy" @click="payOrder">支付确认</button></div><p class="login-hint" v-if="!isCustomer">请先在登录页使用用户账号登录。</p><p class="notice" v-if="notice">{{ notice }}</p></aside>
+        </section>
+      </main>
+    </div>
+    <script src="/vendor/vue.global.prod.js"></script><script type="module" src="/js/pages/booking.js"></script>
+  </body>
+</html>

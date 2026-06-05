@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CinemaOS 页面入口</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-a"></div>
+    <div class="ambient ambient-b"></div>
+
+    <header class="nav-shell glass">
+      <div class="brand">
+        <span class="brand-mark">C</span>
+        <div>
+          <strong>CinemaOS</strong>
+          <small>7 人小组页面入口</small>
+        </div>
+      </div>
+      <nav class="nav-links">
+        <a href="/login.html">登录</a>
+        <a href="/movies.html">影片</a>
+        <a href="/booking.html">选座</a>
+        <a href="/orders.html">订单</a>
+        <a href="/admin-shows.html">调价</a>
+        <a href="/admin-sales.html">统计</a>
+        <a href="/ops.html">运维</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="page-shell">
+        <article class="login-hero glass">
+          <p class="eyebrow">CinemaOS</p>
+          <h1>影院订票系统已经拆成 7 个独立页面。</h1>
+          <p>每位同学负责一个页面文件和一个页面逻辑文件，公共样式与公共接口工具统一复用。</p>
+          <div class="hero-actions">
+            <a class="login-button" href="/login.html">进入登录页</a>
+            <a class="login-button ghost" href="/ops.html">查看运维页</a>
+          </div>
+        </article>
+
+        <section class="login-cards">
+          <article class="portal-card glass">
+            <div class="portal-head"><span>成员 A</span></div>
+            <h2>登录与门户页</h2>
+            <p><a href="/login.html">public/login.html</a></p>
+            <p><code>public/js/pages/login.js</code></p>
+          </article>
+          <article class="portal-card glass">
+            <div class="portal-head"><span>成员 B</span></div>
+            <h2>影片与影院浏览页</h2>
+            <p><a href="/movies.html">public/movies.html</a></p>
+            <p><code>public/js/pages/movies.js</code></p>
+          </article>
+          <article class="portal-card glass">
+            <div class="portal-head"><span>成员 C</span></div>
+            <h2>场次与选座购票页</h2>
+            <p><a href="/booking.html">public/booking.html</a></p>
+            <p><code>public/js/pages/booking.js</code></p>
+          </article>
+          <article class="portal-card glass">
+            <div class="portal-head"><span>成员 D</span></div>
+            <h2>订单与支付页</h2>
+            <p><a href="/orders.html">public/orders.html</a></p>
+            <p><code>public/js/pages/orders.js</code></p>
+          </article>
+          <article class="portal-card glass">
+            <div class="portal-head"><span>成员 E</span></div>
+            <h2>管理员场次调价页</h2>
+            <p><a href="/admin-shows.html">public/admin-shows.html</a></p>
+            <p><code>public/js/pages/admin-shows.js</code></p>
+          </article>
+          <article class="portal-card glass">
+            <div class="portal-head"><span>成员 F</span></div>
+            <h2>管理员销售统计页</h2>
+            <p><a href="/admin-sales.html">public/admin-sales.html</a></p>
+            <p><code>public/js/pages/admin-sales.js</code></p>
+          </article>
+          <article class="portal-card glass">
+            <div class="portal-head"><span>成员 G</span></div>
+            <h2>运维监控页</h2>
+            <p><a href="/ops.html">public/ops.html</a></p>
+            <p><code>public/js/pages/ops.js</code></p>
+          </article>
+        </section>
+      </section>
+    </main>
+  </body>
+</html>

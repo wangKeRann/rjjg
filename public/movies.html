@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>影片浏览 - 影院订票系统</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="app" v-cloak>
+      <div class="ambient ambient-a"></div><div class="ambient ambient-b"></div>
+      <header class="nav-shell glass">
+        <div class="brand"><span class="brand-mark">C</span><div><strong>CinemaOS</strong><small>影片与影院浏览页</small></div></div>
+        <nav class="nav-links"><template v-if="session && session.user.role === 'ADMIN'"><a href="/admin-shows.html">调价</a><a href="/admin-sales.html">统计</a><a href="/ops.html">运维</a></template><template v-else-if="session && session.user.role === 'CUSTOMER'"><a href="/movies.html">影片</a><a href="/booking.html">选座</a><a href="/orders.html">订单</a></template><a v-else href="/login.html">登录</a></nav>
+        <div class="account-actions"><span v-if="session">{{ session.user.displayName }}</span><button v-if="session" class="login-button ghost" @click="logout">退出</button></div>
+      </header>
+      <main>
+        <section class="hero compact-hero">
+          <img class="hero-art" src="/assets/cinema-collage.png" alt="影院" /><div class="hero-overlay"></div>
+          <div class="hero-content"><p class="eyebrow">Member B</p><h1>影片浏览页</h1><p>搜索影片和影院，筛选场次并进入购票。</p></div>
+        </section>
+        <section class="search-strip glass">
+          <label>城市<select v-model="filters.city"><option>上海</option><option>杭州</option><option>南京</option></select></label>
+          <label>日期<select v-model="filters.date"><option>今天 06-04</option><option>明天 06-05</option><option>周六 06-06</option></select></label>
+          <label>影院<select v-model="filters.cinema"><option value="">全部影院</option><option v-for="cinema in cinemas" :key="cinema.name" :value="cinema.name">{{ cinema.name }}</option></select></label>
+          <label>搜索<input v-model="searchQuery" @keyup.enter="runSearch" placeholder="IMAX / VIP / 影片名" /></label>
+          <button @click="runSearch">搜索</button>
+        </section>
+        <section class="page-shell">
+          <div class="section-head"><div><p class="eyebrow">Movies</p><h2>热映影片</h2></div><div class="segmented"><button :class="{ active: sortMode === 'heat' }" @click="sortMode='heat'">热度</button><button :class="{ active: sortMode === 'rating' }" @click="sortMode='rating'">评分</button><button :class="{ active: sortMode === 'price' }" @click="sortMode='price'">低价</button></div></div>
+          <div class="movie-carousel">
+            <article v-for="movie in displayedMovies" :key="movie.id" class="movie-card glass" @click="book(movie)">
+              <div class="poster" :style="posterStyle(movie)"><span>{{ movie.rating }}</span></div>
+              <div class="movie-card-body"><div class="movie-title-row"><h3>{{ movie.title }}</h3><strong>{{ movie.boxOffice }}</strong></div><p>{{ movie.genre }} · {{ movie.duration }}分钟</p><p class="tagline">{{ movie.tagline }}</p><div class="tag-row"><span v-for="tag in movie.tags" :key="tag">{{ tag }}</span></div></div>
+            </article>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script src="/vendor/vue.global.prod.js"></script>
+    <script type="module" src="/js/pages/movies.js"></script>
+  </body>
+</html>
