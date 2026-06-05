@@ -422,6 +422,96 @@ app.get("/api/ops/events", async (_req, res, next) => {
   }
 });
 
+app.get("/api/ops/containers", (_req, res) => {
+  const now = Date.now();
+  const pods = [
+    { name: "cinema-web-a", namespace: "default", status: "Running", restarts: 0, cpu: 0.32, memory: 256, uptime: "3d 14h" },
+    { name: "cinema-web-b", namespace: "default", status: "Running", restarts: 1, cpu: 0.28, memory: 240, uptime: "3d 12h" },
+    { name: "spring-security", namespace: "default", status: "Running", restarts: 0, cpu: 0.45, memory: 512, uptime: "4d 2h" },
+    { name: "flask-recommender", namespace: "default", status: "Running", restarts: 0, cpu: 0.18, memory: 128, uptime: "2d 8h" },
+    { name: "redis-cache", namespace: "default", status: "Running", restarts: 0, cpu: 0.08, memory: 64, uptime: "5d 1h" },
+    { name: "rabbitmq-queue", namespace: "default", status: "Running", restarts: 0, cpu: 0.12, memory: 180, uptime: "5d 1h" },
+  ];
+  const cpuHistory = Array.from({ length: 12 }, (_, i) => ({
+    time: new Date(now - (11 - i) * 60000).toISOString().slice(11, 19),
+    "cinema-web": +(0.25 + Math.random() * 0.15).toFixed(2),
+    "spring-security": +(0.35 + Math.random() * 0.2).toFixed(2),
+  }));
+  res.json({
+    summary: { total: 6, running: 6, pending: 0, failed: 0 },
+    pods,
+    cpuHistory,
+    deployment: {
+      name: "cinema-web",
+      replicas: 2,
+      readyReplicas: 2,
+      strategy: "RollingUpdate",
+      image: "cinema-ticket-availability-demo:latest",
+    },
+  });
+});
+
+app.get("/api/ops/nginx", (_req, res) => {
+  const now = Date.now();
+  const upstreams = [
+    { server: "cinema-web-a:3000", status: "up", weight: 1, activeConns: 12, totalRequests: 2840, bytesSent: 52428800 },
+    { server: "cinema-web-b:3000", status: "up", weight: 1, activeConns: 9, totalRequests: 2610, bytesSent: 48824320 },
+  ];
+  const trafficHistory = Array.from({ length: 12 }, (_, i) => ({
+    time: new Date(now - (11 - i) * 60000).toISOString().slice(11, 19),
+    "cinema-web-a": Math.floor(20 + Math.random() * 30),
+    "cinema-web-b": Math.floor(20 + Math.random() * 30),
+  }));
+  const statusCodes = [
+    { code: "200", count: 4520 },
+    { code: "201", count: 380 },
+    { code: "304", count: 1200 },
+    { code: "401", count: 45 },
+    { code: "409", count: 32 },
+    { code: "500", count: 3 },
+  ];
+  res.json({
+    algorithm: "least_conn",
+    upstreams,
+    trafficHistory,
+    statusCodes,
+    summary: { totalRequests: 5450, avgLatency: 42, activeConns: 21 },
+  });
+});
+
+app.get("/api/ops/observability", (_req, res) => {
+  const now = Date.now();
+  const traceLatency = Array.from({ length: 24 }, (_, i) => ({
+    time: new Date(now - (23 - i) * 300000).toISOString().slice(11, 19),
+    p50: Math.floor(15 + Math.random() * 20),
+    p95: Math.floor(40 + Math.random() * 60),
+    p99: Math.floor(80 + Math.random() * 120),
+  }));
+  const serviceHealth = [
+    { service: "cinema-web", status: "healthy", uptime: "99.8%", errorRate: 0.12, avgLatency: 38 },
+    { service: "spring-security", status: "healthy", uptime: "99.9%", errorRate: 0.05, avgLatency: 22 },
+    { service: "flask-recommender", status: "degraded", uptime: "98.2%", errorRate: 1.8, avgLatency: 145 },
+    { service: "redis-cache", status: "healthy", uptime: "99.99%", errorRate: 0, avgLatency: 1.2 },
+    { service: "rabbitmq-queue", status: "healthy", uptime: "99.95%", errorRate: 0, avgLatency: 3.5 },
+  ];
+  const spans = [
+    { name: "GET /api/movies", service: "cinema-web", duration: 42, status: "ok" },
+    { name: "POST /api/orders", service: "cinema-web", duration: 128, status: "ok" },
+    { name: "lockSeat", service: "redis-cache", duration: 3, status: "ok" },
+    { name: "authenticate", service: "spring-security", duration: 18, status: "ok" },
+    { name: "getRecommendations", service: "flask-recommender", duration: 156, status: "error" },
+    { name: "publishEvent", service: "rabbitmq-queue", duration: 5, status: "ok" },
+    { name: "POST /api/orders/pay", service: "cinema-web", duration: 95, status: "ok" },
+    { name: "markSeatsSold", service: "cinema-web", duration: 12, status: "ok" },
+  ];
+  res.json({
+    traceLatency,
+    serviceHealth,
+    spans,
+    collectorStatus: { otelCollector: "running", prometheus: "running", grafana: "configured" },
+  });
+});
+
 app.get("/metrics", async (_req, res) => {
   redisModeGauge.set(store.mode === "redis" ? 1 : 0);
   res.set("Content-Type", promClient.register.contentType);
