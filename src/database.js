@@ -59,7 +59,21 @@ function readDatabase() {
 function writeDatabase(db) {
   const tmp = `${DB_PATH}.tmp`;
   fs.writeFileSync(tmp, `${JSON.stringify(db, null, 2)}\n`, "utf8");
-  fs.renameSync(tmp, DB_PATH);
+  replaceDatabaseFile(tmp);
+}
+
+function replaceDatabaseFile(tmp) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      fs.renameSync(tmp, DB_PATH);
+      return;
+    } catch (error) {
+      if (!["EPERM", "EBUSY", "EACCES"].includes(error.code) || attempt === 4) {
+        throw error;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+  }
 }
 
 function updateDatabase(mutator) {
