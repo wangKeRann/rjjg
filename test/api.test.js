@@ -73,6 +73,28 @@ test("customer must login before ordering, then can pay locked seats", async () 
   }
 });
 
+test("customer cannot create one order with more than four seats", async () => {
+  await store.connect();
+  orders.clear();
+  const server = await listen();
+
+  try {
+    const token = await login(server, "customer", "13800000000", "123456");
+    const created = await request(server, "/api/orders", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ showId: "s1", seats: ["A3", "A4", "A5", "A6", "A7"] }),
+    });
+
+    assert.equal(created.response.status, 400);
+    assert.equal(created.body.error, "INVALID_SEAT_COUNT");
+    assert.equal(created.body.maxSeats, 4);
+  } finally {
+    server.close();
+    await store.close();
+  }
+});
+
 test("admin can view dashboard and update show price", async () => {
   await store.connect();
   const server = await listen();

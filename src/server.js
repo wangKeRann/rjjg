@@ -30,6 +30,7 @@ const orders = {
   },
 };
 const LOCK_TTL_SECONDS = 120;
+const MAX_SEATS_PER_ORDER = 4;
 
 const logger = {
   info(messageOrFields, message) {
@@ -328,7 +329,15 @@ app.post("/api/orders", requireAuth(["CUSTOMER"]), async (req, res, next) => {
       return;
     }
 
-    const uniqueSeats = Array.from(new Set(seats));
+    const uniqueSeats = Array.from(new Set(seats.map((seat) => String(seat || "").trim()).filter(Boolean)));
+    if (uniqueSeats.length === 0 || uniqueSeats.length > MAX_SEATS_PER_ORDER) {
+      res.status(400).json({
+        error: "INVALID_SEAT_COUNT",
+        maxSeats: MAX_SEATS_PER_ORDER,
+      });
+      return;
+    }
+
     const invalidSeat = uniqueSeats.find((seat) => !item.show.seats.includes(seat));
     if (invalidSeat) {
       res.status(400).json({ error: "INVALID_SEAT", seat: invalidSeat });
