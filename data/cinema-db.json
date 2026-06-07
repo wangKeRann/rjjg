@@ -2,7 +2,7 @@
   "meta": {
     "version": 1,
     "createdAt": "2026-06-05T16:42:47.681Z",
-    "updatedAt": "2026-06-05T17:32:45.330Z",
+    "updatedAt": "2026-06-07T19:46:19.949Z",
     "source": "local persistent database"
   },
   "users": [
@@ -535,6 +535,42 @@
       "createdAt": "2026-06-05T16:42:48.045Z",
       "expiresAt": "2026-06-05T16:44:48.045Z",
       "paidAt": "2026-06-05T16:42:48.342Z"
+    },
+    {
+      "id": "196b952e-17c5-4486-8e0e-607c413f4d20",
+      "showId": "s1",
+      "movieTitle": "星际回声",
+      "cinema": "云上影城 · 星环店",
+      "hall": "IMAX 1号厅",
+      "startsAt": "2026-06-04 19:30",
+      "seats": [
+        "A8"
+      ],
+      "userId": "u1001",
+      "userName": "演示用户",
+      "amount": 58,
+      "status": "CANCELLED",
+      "createdAt": "2026-06-07T18:59:15.130Z",
+      "expiresAt": "2026-06-07T19:01:15.130Z",
+      "cancelReason": "USER_CANCELLED",
+      "cancelledAt": "2026-06-07T19:01:16.454Z"
+    },
+    {
+      "id": "6d6196d3-39f9-476c-97fe-c8319d90ba01",
+      "showId": "s1",
+      "movieTitle": "星际回声",
+      "cinema": "云上影城 · 星环店",
+      "hall": "IMAX 1号厅",
+      "startsAt": "2026-06-04 19:30",
+      "seats": [
+        "A8"
+      ],
+      "userId": "u1001",
+      "userName": "演示用户",
+      "amount": 58,
+      "status": "PENDING_PAYMENT",
+      "createdAt": "2026-06-07T19:46:19.771Z",
+      "expiresAt": "2026-06-07T19:48:19.771Z"
     }
   ]
 }

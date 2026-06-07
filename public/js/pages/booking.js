@@ -16,6 +16,8 @@ createApp({
       currentShow: null,
       currentOrder: null,
       lockTtlSeconds: 120,
+      remainingLockSeconds: 0,
+      lockTimer: null,
       busy: false,
       notice: "",
     };
@@ -40,6 +42,37 @@ createApp({
     await this.selectShow(this.selectedShowId);
   },
   methods: {
+      startLockCountdown(seconds) {
+      // 清除已有定时器
+      if (this.lockTimer) clearInterval(this.lockTimer);
+
+      this.remainingLockSeconds = seconds;
+
+      this.lockTimer = setInterval(async () => {
+        if (this.remainingLockSeconds > 0) {
+          this.remainingLockSeconds -= 1;
+        } else {
+          clearInterval(this.lockTimer);
+          this.lockTimer = null;
+
+          // 超时自动取消订单
+          if (this.currentOrder && this.currentOrder.status === "PENDING_PAYMENT") {
+            try {
+              await apiFetch(`/api/orders/${this.currentOrder.id}/cancel`, {
+                method: "POST",
+                headers: authHeaders(),
+              });
+              this.notice = "订单已超时，座位释放，请重新下单。";
+              this.currentOrder = null;
+              this.selectedSeats = [];
+              await this.loadSeats(false);
+            } catch (error) {
+              this.notice = `自动取消订单失败：${error.message}`;
+            }
+          }
+        }
+      }, 1000);
+    },
     async loadMovies() {
       const payload = await apiFetch("/api/movies");
       this.movies = payload.movies;
@@ -111,6 +144,8 @@ createApp({
         this.lockTtlSeconds = result.lockTtlSeconds;
         this.selectedSeats = [...result.order.seats];
         this.notice = `订单已创建，金额 ￥${result.order.amount}，座位锁定 ${result.lockTtlSeconds} 秒。`;
+        // 启动锁座倒计时
+        this.startLockCountdown(result.lockTtlSeconds);
         await this.loadSeats(false);
       } catch (error) {
         this.currentOrder = null;
@@ -132,6 +167,10 @@ createApp({
         this.currentOrder = result.order;
         this.notice = `支付成功：${result.order.movieTitle}，${result.order.seats.join(", ")}。`;
         this.selectedSeats = [];
+        // 停止倒计时
+        if (this.lockTimer) clearInterval(this.lockTimer);
+        this.lockTimer = null;
+        this.remainingLockSeconds = 0;
         await this.loadSeats(false);
       } catch (error) {
         this.notice = `支付失败：${error.message}`;

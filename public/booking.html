@@ -127,8 +127,8 @@
               <button class="pay" :disabled="!canPayOrder" @click="payOrder">支付确认</button>
             </div>
             <p class="login-hint" v-if="!isCustomer">请先在登录页使用用户账号登录。</p>
-            <p class="login-hint" v-else-if="currentOrder && currentOrder.status === 'PENDING_PAYMENT'">
-              订单已锁座，请在 {{ lockTtlSeconds }} 秒内完成支付。
+            <p class="lock-timer" v-if="canPayOrder">
+              请在 {{ remainingLockSeconds }} 秒内完成支付
             </p>
             <p class="notice" v-if="notice">{{ notice }}</p>
           </aside>
