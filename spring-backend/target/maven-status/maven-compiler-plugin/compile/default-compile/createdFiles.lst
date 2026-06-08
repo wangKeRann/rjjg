@@ -1,0 +1,6 @@
+com\cinema\security\CinemaSecurityApplication.class
+com\cinema\datasource\DynamicDataSourceConfig.class
+com\cinema\order\OrderMessagePublisher.class
+com\cinema\security\ShiroPermissionConfig.class
+com\cinema\security\SpringSecurityConfig.class
+com\cinema\sentinel\SentinelRules.class
