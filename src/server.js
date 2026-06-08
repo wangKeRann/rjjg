@@ -2,7 +2,7 @@ const crypto = require("node:crypto");
 const path = require("node:path");
 const express = require("express");
 const promClient = require("prom-client");
-const { issueSession, requireAuth, revokeSession, verifyLogin } = require("./auth");
+const { issueSession, permissionsForRole, requireAuth, requirePermission, revokeSession, verifyLogin } = require("./auth");
 const RedisStore = require("./redisStore");
 const SearchService = require("./searchService");
 const {
@@ -158,6 +158,9 @@ app.post("/api/auth/login", (req, res) => {
   res.json({
     token: issueSession(user),
     user,
+    permissions: permissionsForRole(user.role),
+    tokenType: "Bearer",
+    expiresIn: Number(process.env.JWT_TTL_SECONDS || 60 * 60 * 8),
     portal: role === "ADMIN" ? "admin" : "customer",
     redirect: role === "ADMIN" ? "#admin" : "#booking",
   });
@@ -169,7 +172,7 @@ app.post("/api/auth/logout", requireAuth(), (req, res) => {
 });
 
 app.get("/api/me", requireAuth(), (req, res) => {
-  res.json({ user: req.user });
+  res.json({ user: req.user, permissions: req.auth.permissions, claims: req.auth.claims });
 });
 
 app.get("/api/movies", async (_req, res) => {
@@ -315,7 +318,7 @@ app.get("/api/shows/:showId/seats", async (req, res, next) => {
   }
 });
 
-app.post("/api/orders", requireAuth(["CUSTOMER"]), async (req, res, next) => {
+app.post("/api/orders", requirePermission("order:create"), async (req, res, next) => {
   try {
     const { showId, seats } = req.body || {};
     if (!showId || !Array.isArray(seats) || seats.length === 0) {
@@ -387,7 +390,7 @@ app.post("/api/orders", requireAuth(["CUSTOMER"]), async (req, res, next) => {
   }
 });
 
-app.post("/api/orders/:orderId/pay", requireAuth(["CUSTOMER", "ADMIN"]), async (req, res, next) => {
+app.post("/api/orders/:orderId/pay", requirePermission("order:pay:self", "order:pay:any"), async (req, res, next) => {
   try {
     const order = getOrders().find((item) => item.id === req.params.orderId);
     if (!order) {
@@ -436,7 +439,7 @@ app.post("/api/orders/:orderId/pay", requireAuth(["CUSTOMER", "ADMIN"]), async (
   }
 });
 
-app.post("/api/orders/:orderId/cancel", requireAuth(["CUSTOMER", "ADMIN"]), async (req, res, next) => {
+app.post("/api/orders/:orderId/cancel", requirePermission("order:cancel:self", "order:cancel:any"), async (req, res, next) => {
   try {
     const order = getOrders().find((item) => item.id === req.params.orderId);
     if (!order) {
@@ -454,7 +457,7 @@ app.post("/api/orders/:orderId/cancel", requireAuth(["CUSTOMER", "ADMIN"]), asyn
   }
 });
 
-app.get("/api/orders/:orderId", requireAuth(["CUSTOMER", "ADMIN"]), (req, res) => {
+app.get("/api/orders/:orderId", requirePermission("order:read:self", "order:read:any"), (req, res) => {
   const order = getOrders().find((item) => item.id === req.params.orderId);
   if (!order) {
     res.status(404).json({ error: "ORDER_NOT_FOUND" });
@@ -467,14 +470,14 @@ app.get("/api/orders/:orderId", requireAuth(["CUSTOMER", "ADMIN"]), (req, res) =
   res.json({ order });
 });
 
-app.get("/api/my/orders", requireAuth(["CUSTOMER"]), (req, res) => {
+app.get("/api/my/orders", requirePermission("order:read:self"), (req, res) => {
   const rows = getOrders()
     .filter((order) => order.userId === req.user.id)
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
   res.json({ orders: rows });
 });
 
-app.get("/api/admin/dashboard", requireAuth(["ADMIN"]), async (_req, res, next) => {
+app.get("/api/admin/dashboard", requirePermission("admin:dashboard"), async (_req, res, next) => {
   try {
     res.json(await buildAdminDashboard());
   } catch (error) {
@@ -482,7 +485,7 @@ app.get("/api/admin/dashboard", requireAuth(["ADMIN"]), async (_req, res, next) 
   }
 });
 
-app.patch("/api/admin/shows/:showId/price", requireAuth(["ADMIN"]), async (req, res, next) => {
+app.patch("/api/admin/shows/:showId/price", requirePermission("show:price:update"), async (req, res, next) => {
   try {
     const price = Number(req.body?.price);
     if (!Number.isFinite(price) || price < 1 || price > 999) {
@@ -524,7 +527,7 @@ app.get("/api/cache/stats", async (_req, res, next) => {
 });
 
 // 清空缓存 API（管理员使用）
-app.delete("/api/cache/clear", requireAuth(["ADMIN"]), async (_req, res, next) => {
+app.delete("/api/cache/clear", requirePermission("cache:manage"), async (_req, res, next) => {
   try {
     const cacheTypes = [...RedisStore.BROWSE_CACHE_TYPES];
     for (const cacheType of cacheTypes) {
@@ -540,7 +543,7 @@ app.delete("/api/cache/clear", requireAuth(["ADMIN"]), async (_req, res, next) =
   }
 });
 
-app.delete("/api/cache/clear/:type", requireAuth(["ADMIN"]), async (req, res, next) => {
+app.delete("/api/cache/clear/:type", requirePermission("cache:manage"), async (req, res, next) => {
   try {
     const { type } = req.params;
     await store.clearCacheType(type);
@@ -554,7 +557,7 @@ app.delete("/api/cache/clear/:type", requireAuth(["ADMIN"]), async (req, res, ne
   }
 });
 
-app.get("/api/admin/stats", async (_req, res, next) => {
+app.get("/api/admin/stats", requirePermission("admin:dashboard"), async (_req, res, next) => {
   try {
     const movies = getMovies().map((movie) => {
       const totalSeats = movie.shows.reduce((sum, show) => sum + show.seats.length, 0);
@@ -589,7 +592,7 @@ app.get("/api/admin/stats", async (_req, res, next) => {
   }
 });
 
-app.get("/api/ops/events", async (_req, res, next) => {
+app.get("/api/ops/events", requirePermission("ops:view"), async (_req, res, next) => {
   try {
     res.json({ events: await store.recentEvents(20) });
   } catch (error) {

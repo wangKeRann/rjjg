@@ -1,4 +1,4 @@
-import { apiFetch, getSession, logout } from "../common.js";
+import { apiFetch, authHeaders, getSession, logout } from "../common.js";
 
 const { createApp } = Vue;
 
@@ -13,7 +13,7 @@ createApp({
     async loadOps() {
       this.health = await apiFetch("/api/health");
       this.topology = await apiFetch("/api/infrastructure/topology");
-      this.events = (await apiFetch("/api/ops/events")).events;
+      this.events = (await apiFetch("/api/ops/events", { headers: authHeaders() })).events;
     },
   },
 }).mount("#app");
