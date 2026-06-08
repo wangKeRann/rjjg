@@ -1,38 +1,61 @@
 import { apiFetch, authHeaders, getSession, logout } from "../common.js";
-
 const { createApp } = Vue;
 
 createApp({
   data() {
-    return { session: getSession(), logout, dashboard: null, priceDrafts: {}, notice: "" };
+    return {
+      session: getSession(),
+      logout,
+      dashboard: null,
+      priceDrafts: {},
+      notice: ""
+    };
   },
   computed: {
     isAdmin() {
       return this.session?.user?.role === "ADMIN";
-    },
+    }
   },
   async mounted() {
     await this.loadDashboard();
   },
   methods: {
+    // 刷新后台：加载仓库数据
     async loadDashboard() {
       if (!this.isAdmin) return;
-      this.dashboard = await apiFetch("/api/admin/dashboard", { headers: authHeaders() });
-      this.priceDrafts = Object.fromEntries(this.dashboard.shows.map((show) => [show.id, show.price]));
+      this.notice = "正在从从库加载数据...";
+      try {
+        // 请求后端接口
+        const res = await apiFetch("/api/admin/dashboard", { headers: authHeaders() });
+        this.dashboard = res;
+        //彻底清空旧数据
+        this.priceDrafts = {};
+        res.shows.forEach(show => {
+          this.priceDrafts[show.id] = Number(show.price);
+          console.log(`场次ID:${show.id} | 影片:${show.movieTitle} | 后端价格:${show.price} | 已写入priceDrafts`);
+        });
+        this.notice = "数据加载完成（数据源：从库）";
+      } catch (err) {
+        this.notice = "加载数据失败";
+        console.error("加载仪表盘异常：", err);
+      }
     },
+
+    // 提交调价：写入主库
     async updatePrice(show) {
       try {
         const price = this.priceDrafts[show.id];
         await apiFetch(`/api/admin/shows/${show.id}/price`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json", ...authHeaders() },
-          body: JSON.stringify({ price }),
+          body: JSON.stringify({ price })
         });
-        this.notice = `${show.movieTitle} 票价已调整为 ￥${price}`;
+        // 同步完成自动刷新从库数据
         await this.loadDashboard();
       } catch (error) {
         this.notice = `调价失败：${error.message}`;
+        console.error("调价出错：", error);
       }
-    },
-  },
+    }
+  }
 }).mount("#app");

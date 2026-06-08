@@ -1,3 +1,6 @@
+//数据库读写分离
+const { readDatabase, updateDatabase } = require('./db-rw-separation');
+
 const crypto = require("node:crypto");
 const path = require("node:path");
 const express = require("express");
@@ -482,28 +485,55 @@ app.get("/api/admin/dashboard", requireAuth(["ADMIN"]), async (_req, res, next) 
   }
 });
 
+//修改电影票价（读写分离）
 app.patch("/api/admin/shows/:showId/price", requireAuth(["ADMIN"]), async (req, res, next) => {
   try {
     const price = Number(req.body?.price);
     if (!Number.isFinite(price) || price < 1 || price > 999) {
-      res.status(400).json({ error: "INVALID_PRICE", message: "票价需要在 1 到 999 之间" });
-      return;
+      return res.status(400).json({ error: "INVALID_PRICE", message: "票价需要在 1 到 999 之间" });
     }
-    const show = updateShowPrice(req.params.showId, Math.round(price));
-    if (!show) {
-      res.status(404).json({ error: "SHOW_NOT_FOUND" });
-      return;
-    }
-    await store.invalidateBrowseCache();
-    const item = findShow(show.id);
-    await store.publishEvent("PRICE_UPDATED", {
-      showId: show.id,
-      movieTitle: item.movie.title,
-      price: show.price,
-      operator: req.user.displayName,
+
+    //使用回调函数的方式调用updateDatabase
+    //写主库
+    const updatedShow = updateDatabase((db) => {
+      const show = db.shows.find((item) => item.id === req.params.showId);
+      if (!show) return null;
+      
+      show.price = Math.round(price);
+      show.lastUpdatedBy = req.user.displayName;
+      show.updatedAt = new Date().toISOString();
+      return show;
     });
-    res.json({ show: publicShow(item.movie, show) });
+
+    if (!updatedShow) {
+      return res.status(404).json({ error: "SHOW_NOT_FOUND" });
+    }
+
+    // 缓存失效与事件发布
+    //if (store.invalidateBrowseCache) await store.invalidateBrowseCache();
+    // 读从库
+    const freshDb = readDatabase();
+    const freshShow = freshDb.shows.find(s => s.id === req.params.showId);
+    const movie = freshDb.movies.find(m => m.id === freshShow.movieId);
+
+    if (store.publishEvent) {
+      await store.publishEvent("PRICE_UPDATED", {
+        showId: freshShow.id,
+        movieTitle: movie ? movie.title : "未知电影",
+        price: freshShow.price,
+        operator: req.user.displayName,
+      });
+    }
+    // 返回给前端的数据
+    res.json({ 
+      show: {
+        id: freshShow.id,
+        movieTitle: movie ? movie.title : "未知电影",
+        price: freshShow.price
+      } 
+    });
   } catch (error) {
+    console.error("调价接口内部崩溃:", error); // 打印真实错误
     next(error);
   }
 });
@@ -628,13 +658,28 @@ function publicShow(movie, show) {
 }
 
 async function buildAdminDashboard() {
-  const allOrders = getOrders();
-  const paidOrders = allOrders.filter((order) => order.status === "PAID");
-  const pendingOrders = allOrders.filter((order) => order.status === "PENDING_PAYMENT");
-  const shows = getShowsForAdmin();
+  const db = readDatabase();
+  const allOrders = db.orders;
+  const paidOrders = allOrders.filter(order => order.status === "PAID");
+  const pendingOrders = allOrders.filter(order => order.status === "PENDING_PAYMENT");
+
+  const shows = db.shows.map(show => {
+    const movie = db.movies.find(m => m.id === show.movieId);
+    return {
+      id: show.id,
+      movieTitle: movie?.title || "未知影片",
+      startsAt: show.startsAt,
+      cinema: show.cinema,
+      hall: show.hall,
+      price: show.price, // 直接用从库的price
+      soldSeats: show.sold.length,
+      totalSeats: show.seats.length
+    };
+  });
+
   return {
     overview: {
-      movies: getMovies().length,
+      movies: db.movies.length,
       shows: shows.length,
       paidOrders: paidOrders.length,
       pendingOrders: pendingOrders.length,
@@ -647,6 +692,7 @@ async function buildAdminDashboard() {
       .slice(0, 30),
   };
 }
+
 
 async function cancelOrder(order, reason) {
   if (order.status !== "PENDING_PAYMENT") {
