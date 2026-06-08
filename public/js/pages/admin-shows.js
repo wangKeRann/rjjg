@@ -4,7 +4,13 @@ const { createApp } = Vue;
 
 createApp({
   data() {
-    return { session: getSession(), logout, dashboard: null, priceDrafts: {}, notice: "" };
+    return {
+      session: getSession(),
+      logout,
+      dashboard: null,
+      priceDrafts: {},
+      notice: "",
+    };
   },
   computed: {
     isAdmin() {

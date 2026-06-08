@@ -3,128 +3,119 @@
   <head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>运维监控 - 影院订票系统</title><link rel="stylesheet" href="/styles.css" /><link rel="stylesheet" href="/ops.css" /></head>
   <body><div id="app" v-cloak><div class="ambient ambient-a"></div><div class="ambient ambient-b"></div>
     <header class="nav-shell glass"><div class="brand"><span class="brand-mark">C</span><div><strong>CinemaOS</strong><small>运维监控页</small></div></div><nav class="nav-links"><template v-if="session && session.user.role === 'ADMIN'"><a href="/admin-shows.html">调价</a><a href="/admin-sales.html">统计</a><a href="/ops.html">运维</a></template><template v-else-if="session && session.user.role === 'CUSTOMER'"><a href="/movies.html">影片</a><a href="/booking.html">选座</a><a href="/orders.html">订单</a></template><a v-else href="/login.html">登录</a></nav><div class="account-actions"><span v-if="session">{{ session.user.displayName }}</span><button v-if="session" class="login-button ghost" @click="logout">退出</button></div></header>
-    <main><section class="hero compact-hero"><img class="hero-art" src="/assets/cinema-collage.png" /><div class="hero-overlay"></div><div class="hero-content"><p class="eyebrow">Member G</p><h1>运维监控页</h1><p>Docker/Kubernetes 容器编排 &middot; Nginx 负载均衡 &middot; Grafana/OpenTelemetry 可观测性</p></div></section>
+    <main><section class="hero compact-hero"><img class="hero-art" src="/assets/cinema-collage.png" /><div class="hero-overlay"></div><div class="hero-content"><p class="eyebrow">Member G</p><h1>运维监控页</h1><p>Docker/Kubernetes · Nginx/负载均衡 · Grafana/OpenTelemetry</p></div></section>
 
-      <!-- 概览指标条 -->
-      <section class="ops-kpi-row">
-        <div class="ops-kpi glass" v-for="kpi in kpis" :key="kpi.label">
-          <span class="kpi-label">{{ kpi.label }}</span>
-          <strong :class="kpi.status">{{ kpi.value }}</strong>
-          <small>{{ kpi.sub }}</small>
+      <!-- 1. 健康状态 — prom-client + OTel API -->
+      <section class="page-shell">
+        <div class="section-head"><div><p class="eyebrow">Grafana / OpenTelemetry</p><h2>📊 健康状态</h2><p class="section-desc">基于 prom-client 实时指标采集 + @opentelemetry/api 追踪，系统核心组件运行状态。</p></div><button class="ghost-button" @click="loadOps">刷新状态</button></div>
+        <div class="health-grid">
+          <div class="health-card glass" v-for="item in healthItems" :key="item.name">
+            <div class="health-dot" :class="item.status"></div>
+            <div class="health-body">
+              <strong>{{ item.name }}</strong>
+              <small>{{ item.label }}</small>
+            </div>
+            <div class="health-value">{{ item.value }}</div>
+          </div>
         </div>
       </section>
 
-      <!-- 三大技术监控面板 -->
+      <!-- 2. 部署拓扑 — Docker/Kubernetes + Nginx -->
       <section class="page-shell">
-        <div class="section-head"><div><p class="eyebrow">Container Orchestration</p><h2>🐳 Docker / Kubernetes</h2></div><button class="ghost-button" @click="loadOps">刷新状态</button></div>
-        <div class="ops-tech-row">
-          <div class="ops-tech-card glass">
-            <h3>Pod 运行状态</h3>
-            <div id="chart-pod-status" class="chart-box"></div>
+        <div class="section-head"><div><p class="eyebrow">Docker / Kubernetes · Nginx / 负载均衡</p><h2>🔀 部署拓扑</h2><p class="section-desc">读取 docker-compose.yml + k8s/cinema-app.yaml + infra/nginx/nginx.conf 真实配置，展示架构拓扑。</p></div></div>
+
+        <!-- 拓扑图 -->
+        <div class="topo-diagram glass">
+          <div class="topo-layer">
+            <div class="topo-node ingress">Ingress<span>{{ deployment.host }}</span></div>
+            <div class="topo-arrow">▼</div>
           </div>
-          <div class="ops-tech-card glass">
-            <h3>CPU 使用率趋势</h3>
-            <div id="chart-cpu" class="chart-box"></div>
+          <div class="topo-layer">
+            <div class="topo-node nginx">Nginx<span>{{ nginx.algorithm }}</span></div>
+            <div class="topo-arrow">▼</div>
           </div>
-          <div class="ops-tech-card glass ops-table-card">
-            <h3>容器实例列表</h3>
-            <div class="pod-table">
-              <div class="pod-row pod-head"><span>Pod</span><span>状态</span><span>CPU</span><span>内存</span><span>重启</span></div>
-              <div class="pod-row" v-for="pod in containers.pods" :key="pod.name">
-                <span><strong>{{ pod.name }}</strong><small>{{ pod.namespace }}</small></span>
-                <span><span class="status-chip running">{{ pod.status }}</span></span>
-                <span>{{ pod.cpu }}c</span>
-                <span>{{ pod.memory }}Mi</span>
-                <span>{{ pod.restarts }}</span>
+          <div class="topo-pods">
+            <div class="topo-node pod" v-for="svc in dockerServices" :key="svc.name">
+              <strong>{{ svc.name }}</strong>
+              <small v-if="svc.ports.length">{{ svc.ports[0] }}</small>
+            </div>
+          </div>
+        </div>
+
+        <!-- 配置文件摘要 -->
+        <div class="config-cards">
+          <div class="config-card glass">
+            <h4>docker-compose.yml</h4>
+            <div class="config-list">
+              <div class="config-row" v-for="svc in dockerServices" :key="svc.name">
+                <span>{{ svc.name }}</span>
+                <small>{{ (svc.ports || []).join(', ') }}</small>
               </div>
+              <div class="config-row empty" v-if="!dockerServices.length">docker-compose.yml 未找到，请联系管理员部署</div>
             </div>
-            <div class="deploy-info">
-              <span>Deployment: <strong>{{ containers.deployment?.name }}</strong></span>
-              <span>副本: <strong>{{ containers.deployment?.readyReplicas }}/{{ containers.deployment?.replicas }}</strong></span>
-              <span>策略: <strong>{{ containers.deployment?.strategy }}</strong></span>
+          </div>
+          <div class="config-card glass">
+            <h4>k8s/cinema-app.yaml</h4>
+            <div class="config-list">
+              <div class="config-row"><span>副本数</span><strong>{{ deployment.replicas }}</strong></div>
+              <div class="config-row"><span>策略</span><strong>{{ deployment.strategy }}</strong></div>
+              <div class="config-row"><span>镜像</span><strong>{{ deployment.image }}</strong></div>
+              <div class="config-row"><span>Ingress Host</span><strong>{{ deployment.host }}</strong></div>
+            </div>
+          </div>
+          <div class="config-card glass">
+            <h4>infra/nginx/nginx.conf</h4>
+            <div class="config-list">
+              <div class="config-row"><span>负载算法</span><strong>{{ nginx.algorithm }}</strong></div>
+              <div class="config-row" v-for="srv in nginx.servers" :key="srv"><span>Upstream</span><strong>{{ srv }}</strong></div>
+              <div class="config-row"><span>路由</span><strong>{{ (nginx.locations || []).join('  ') }}</strong></div>
             </div>
           </div>
         </div>
       </section>
 
+      <!-- 3. 最近事件 — prom-client 指标 + OTel Span 事件流 -->
       <section class="page-shell">
-        <div class="section-head"><div><p class="eyebrow">Load Balancing</p><h2>🔀 Nginx / 负载均衡</h2></div></div>
-        <div class="ops-tech-row">
-          <div class="ops-tech-card glass">
-            <h3>上游流量分布</h3>
-            <div id="chart-traffic-pie" class="chart-box"></div>
+        <div class="section-head"><div><p class="eyebrow">Grafana / OpenTelemetry</p><h2>📋 最近事件</h2><p class="section-desc">OpenTelemetry Trace Span 实时采样 + prom-client 指标事件 + 系统操作日志。</p></div></div>
+
+        <!-- Prometheus 指标概览 -->
+        <div class="metrics-strip glass">
+          <div class="metric-badge">
+            <span>HTTP 请求</span>
+            <strong>{{ prometheusMetrics.httpRequests }} req</strong>
           </div>
-          <div class="ops-tech-card glass">
-            <h3>请求速率趋势</h3>
-            <div id="chart-request-rate" class="chart-box"></div>
+          <div class="metric-badge">
+            <span>创建订单</span>
+            <strong>{{ prometheusMetrics.ordersCreated }}</strong>
           </div>
-          <div class="ops-tech-card glass ops-table-card">
-            <h3>Upstream 状态 &amp; HTTP 状态码</h3>
-            <div class="upstream-list">
-              <div class="upstream-item" v-for="up in nginx.upstreams" :key="up.server">
-                <div class="upstream-head"><span class="status-chip running">{{ up.status }}</span><strong>{{ up.server }}</strong></div>
-                <div class="upstream-metrics">
-                  <div><small>活跃连接</small><span>{{ up.activeConns }}</span></div>
-                  <div><small>总请求</small><span>{{ up.totalRequests }}</span></div>
-                  <div><small>流量</small><span>{{ (up.bytesSent / 1048576).toFixed(1) }}MB</span></div>
+          <div class="metric-badge">
+            <span>支付订单</span>
+            <strong>{{ prometheusMetrics.ordersPaid }}</strong>
+          </div>
+          <div class="metric-badge">
+            <span>Redis 模式</span>
+            <strong :class="prometheusMetrics.redisMode === 'redis' ? 'ok' : 'warn'">{{ prometheusMetrics.redisMode }}</strong>
+          </div>
+          <a href="/metrics" target="_blank" class="metrics-link">Prometheus 指标 →</a>
+        </div>
+
+        <!-- 事件流 -->
+        <div class="event-stream glass">
+          <h3>事件流（实时 Trace Span + 系统日志）</h3>
+          <div class="event-timeline">
+            <div class="event-item" v-for="(ev, idx) in eventStream" :key="idx">
+              <div class="event-dot" :class="ev.level"></div>
+              <div class="event-content">
+                <div class="event-header">
+                  <span class="event-type">{{ ev.type }}</span>
+                  <span class="event-service">{{ ev.source }}</span>
+                  <span class="event-time">{{ ev.at }}</span>
                 </div>
+                <div class="event-detail" v-if="ev.detail">{{ ev.detail }}</div>
               </div>
             </div>
-            <div class="http-code-bar">
-              <div v-for="sc in nginx.statusCodes" :key="sc.code" class="code-segment" :style="{flex: sc.count}">
-                <span class="code-label">{{ sc.code }}</span>
-                <span class="code-count">{{ sc.count }}</span>
-              </div>
-            </div>
-            <div class="lb-info">算法: <strong>{{ nginx.algorithm }}</strong> &nbsp;|&nbsp; 平均延迟: <strong>{{ nginx.summary?.avgLatency }}ms</strong></div>
+            <div class="event-item empty" v-if="!eventStream.length">暂无事件，系统运行中即产生 OTel Span 数据</div>
           </div>
-        </div>
-      </section>
-
-      <section class="page-shell">
-        <div class="section-head"><div><p class="eyebrow">Observability</p><h2>📊 Grafana / OpenTelemetry</h2></div></div>
-        <div class="ops-tech-row">
-          <div class="ops-tech-card glass">
-            <h3>Trace 延迟分布 (P50/P95/P99)</h3>
-            <div id="chart-trace-latency" class="chart-box"></div>
-          </div>
-          <div class="ops-tech-card glass">
-            <h3>服务健康度</h3>
-            <div id="chart-service-health" class="chart-box"></div>
-          </div>
-          <div class="ops-tech-card glass ops-table-card">
-            <h3>Trace Span 采样</h3>
-            <div class="span-list">
-              <div class="span-row span-head"><span>Span Name</span><span>Service</span><span>耗时</span><span>状态</span></div>
-              <div class="span-row" v-for="span in observability.spans" :key="span.name">
-                <span>{{ span.name }}</span>
-                <span>{{ span.service }}</span>
-                <span>{{ span.duration }}ms</span>
-                <span><span :class="['status-chip', span.status === 'ok' ? 'running' : 'error']">{{ span.status === 'ok' ? 'OK' : 'ERR' }}</span></span>
-              </div>
-            </div>
-            <div class="collector-status">
-              <span>OTel Collector: <strong class="ok">● 运行中</strong></span>
-              <span>Prometheus: <strong class="ok">● 运行中</strong></span>
-              <span>Grafana: <strong class="warn">● 已配置</strong></span>
-              <a href="/metrics" target="_blank" class="metrics-link">Prometheus 指标 →</a>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- 部署拓扑 + 事件 -->
-      <section class="page-shell">
-        <div class="section-head"><div><p class="eyebrow">Infrastructure</p><h2>部署拓扑 &amp; 系统事件</h2></div></div>
-        <div class="ops-bottom-row">
-          <article class="ops-card glass">
-            <h3>部署拓扑</h3>
-            <div class="topology-grid"><div v-for="(items, key) in topology" :key="key"><strong>{{ key }}</strong><span v-for="item in items" :key="item">{{ item }}</span></div></div>
-          </article>
-          <article class="ops-card glass">
-            <h3>最近事件</h3>
-            <div class="event-list"><p v-for="event in events" :key="event.id"><strong>{{ event.type }}</strong><span>{{ event.at }}</span></p><p v-if="!events.length">暂无事件</p></div>
-          </article>
         </div>
       </section>
     </main>
