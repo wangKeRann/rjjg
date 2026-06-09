@@ -1,5 +1,5 @@
 const amqp = require('amqplib');
-const { simpleLogger as logger } = require('./logger');
+const logger = require('./logger').simpleLogger;
 const { markEventAsSent, markEventAsFailed } = require('./outboxService');
 
 let connection = null;
