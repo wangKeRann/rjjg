@@ -29,6 +29,10 @@ const { orderLogger } = require('./logger');
 const { payOrder: orderPay, cancelOrder: orderCancel } = require('./orderService');
 
 const app = express();
+
+//引入模拟 Nacos 配置中心
+const nacos = require('./nacos-config');
+
 const orders = {
   clear() {
     const { resetDatabase } = require("./database");
@@ -661,7 +665,25 @@ app.get("/api/my/orders", requirePermission("order:read:self"), (req, res) => {
 
 app.get("/api/admin/dashboard", requirePermission("admin:dashboard"), async (_req, res, next) => {
   try {
-    res.json(await buildAdminDashboard());
+    // 1. 保留原有逻辑：获取仪表盘原始数据
+    const originData = await buildAdminDashboard();
+    // 2. 新增：从 Nacos 获取当前票价倍率
+    const { priceRate } = nacos.getConfig();
+
+    // 3. 新增：遍历场次，计算最终展示价格（基础价 * 动态倍率）
+    if (originData.shows && Array.isArray(originData.shows)) {
+      originData.shows = originData.shows.map(show => {
+        return {
+          ...show,
+          // 保留原有 price（基础票价，用于读写分离调价）
+          // 新增 realPrice 作为动态计算后的实际售价
+          realPrice: (show.price * priceRate).toFixed(2)
+        };
+      });
+    }
+
+    // 4. 正常返回数据，原有结构不变
+    res.json(originData);
   } catch (error) {
     next(error);
   }
@@ -719,6 +741,24 @@ app.patch("/api/admin/shows/:showId/price", requirePermission("show:price:update
     next(error);
   }
 });
+
+// ========== 以下为 Nacos 专属新增接口，原有代码完全不动 ==========
+// 1. 获取当前Nacos配置（前端查看用）
+// 新增：Nacos 配置更新接口（模拟控制台）
+app.patch('/api/admin/nacos-price-rate', (req, res) => {
+  nacos.publishConfig(req.body);
+  res.json({
+    code: 200,
+    msg: "票价倍率配置更新成功",
+    data: nacos.getConfig()
+  });
+});
+
+// 可选：监听配置变更，终端打印日志
+nacos.subscribe(cfg => {
+  console.log("[Nacos] 票价倍率已变更，当前倍率：", cfg.priceRate);
+});
+// ==========================================================
 
 // 缓存统计API
 app.get("/api/cache/stats", async (_req, res, next) => {

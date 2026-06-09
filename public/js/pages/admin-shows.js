@@ -62,6 +62,26 @@ createApp({
         this.notice = `调价失败：${error.message}`;
         console.error("调价出错：", error);
       }
+    },
+
+    // 新增：标准写法的 Nacos 方法（无任何波浪线）
+    async updatePriceRate() {
+      const priceRate = Number(document.getElementById('priceRate').value);
+      try {
+        const res = await apiFetch("/api/admin/nacos-price-rate", {
+          method: "PATCH",
+          headers: authHeaders(),
+          body: JSON.stringify({ priceRate })
+        });
+        document.getElementById('rateTip').innerText = "✅ 配置生效";
+        // 关键：用 this. 调用组件内的刷新方法
+        await this.loadDashboard();
+      } catch (err) {
+        document.getElementById('rateTip').innerText = "❌ 配置失败";
+      }
     }
+  
   }
+
+    
 }).mount("#app");

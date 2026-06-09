@@ -2,8 +2,7 @@
   "meta": {
     "version": 1,
     "createdAt": "2026-06-05T16:42:47.681Z",
-    "updatedAt": "2026-06-08T11:04:53.154Z",
-    "updatedAt": "2026-06-09T08:52:52.942Z",
+    "updatedAt": "2026-06-08T17:45:52.485Z",
     "source": "local persistent database"
   },
   "users": [
@@ -220,7 +219,7 @@
         "B2"
       ],
       "lastUpdatedBy": "影院管理员",
-      "updatedAt": "2026-06-08T11:05:06.786Z"
+      "updatedAt": "2026-06-08T17:45:32.265Z"
     },
     {
       "id": "s2",
