@@ -11,7 +11,8 @@
  */
 
 const { cleanupSentEvents } = require('../src/outboxService');
-const { simpleLogger as logger } = require('../src/logger');
+const loggerModule = require('../src/logger');
+const logger = loggerModule.simpleLogger;
 
 const retentionHours = parseInt(process.argv[2]) || 24;
 
