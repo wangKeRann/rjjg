@@ -1,85 +1,99 @@
 <!doctype html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>场次调价 - 影院订票系统</title>
-    <link rel="stylesheet" href="/styles.css" />
-  </head>
-  <body>
-    <div id="app" v-cloak>
-      <div class="ambient ambient-a"></div>
-      <div class="ambient ambient-b"></div>
-      <header class="nav-shell glass">
-        <div class="brand">
-          <span class="brand-mark">C</span>
-          <div>
-            <strong>CinemaOS</strong>
-            <small>管理员场次调价页</small>
-          </div>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>场次调价 - 影院订票系统</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div id="app" v-cloak>
+    <div class="ambient ambient-a"></div>
+    <div class="ambient ambient-b"></div>
+    <header class="nav-shell glass">
+      <div class="brand">
+        <span class="brand-mark">C</span>
+        <div>
+          <strong>CinemaOS</strong>
+          <small>管理员场次调价页</small>
         </div>
-        <nav class="nav-links">
-          <template v-if="session && session.user.role === 'ADMIN'">
+      </div>
+      <nav class="nav-links">
+        <template v-if="session && session.user">
+          <template v-if="session.user.role === 'ADMIN'">
             <a href="/admin-shows.html">调价</a>
             <a href="/admin-sales.html">统计</a>
             <a href="/ops.html">运维</a>
           </template>
-          <template v-else-if="session && session.user.role === 'CUSTOMER'">
+          <template v-else-if="session.user.role === 'CUSTOMER'">
             <a href="/movies.html">影片</a>
             <a href="/booking.html">选座</a>
             <a href="/orders.html">订单</a>
           </template>
-          <a v-else href="/login.html">登录</a>
-        </nav>
-        <div class="account-actions">
-          <span v-if="session">{{ session.user.displayName }}</span>
-          <button v-if="session" class="login-button ghost" @click="logout">退出</button>
+        </template>
+        <a v-else href="/login.html">登录</a>
+      </nav>
+      <div class="account-actions">
+        <span v-if="session && session.user">{{ session.user.displayName }}</span>
+        <button v-if="session" class="login-button ghost" @click="logout">退出</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero compact-hero">
+        <img class="hero-art" src="/assets/cinema-collage.png" />
+        <div class="hero-overlay"></div>
+        <div class="hero-content">
+          <p class="eyebrow">RBAC Admin</p>
+          <h1>管理员场次调价</h1>
+          <p>登录后由 JWT 证明身份，再按 RBAC 权限点开放后台能力。</p>
         </div>
-      </header>
+      </section>
 
-      <main>
-        <section class="hero compact-hero">
-          <img class="hero-art" src="/assets/cinema-collage.png" />
-          <div class="hero-overlay"></div>
-          <div class="hero-content">
-            <p class="eyebrow">RBAC Admin</p>
-            <h1>管理员场次调价</h1>
-            <p>登录后由 JWT 证明身份，再按 RBAC 权限点开放后台能力。</p>
+      <section class="page-shell">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Admin Shows</p>
+            <h2>场次调价</h2>
           </div>
-        </section>
+          <button class="ghost-button" @click="loadDashboard">刷新后台</button>
+        </div>
 
-        <section class="page-shell">
-          <div class="section-head">
-            <div>
-              <p class="eyebrow">Admin Shows</p>
-              <h2>场次调价</h2>
-            </div>
-            <button class="ghost-button" @click="loadDashboard">刷新后台</button>
+        <p class="login-hint" v-if="!isAdmin">请先用管理员账号登录：admin / admin123</p>
+
+        <!-- Nacos 倍率配置面板 -->
+        <div class="glass-soft" style="margin:15px 0;padding:15px;" v-if="isAdmin">
+          <h3>Nacos 全局票价倍率配置</h3>
+          <div style="margin-top:10px;">
+            <label>倍率：</label>
+            <input type="number" id="priceRate" step="0.1" min="0.1" max="2" value="1.0">
+            <button class="ghost-button" @click="updatePriceRate">应用配置</button>
+            <span id="rateTip" style="margin-left:10px;color:green;"></span>
           </div>
+          <p style="margin-top:8px;font-size:14px;color:#666;">说明：优惠价仅本页面展示，不修改数据库、不影响订单与用户端</p>
+        </div>
 
-          <p class="login-hint" v-if="!isAdmin">请先用管理员账号登录：admin / admin123</p>
-
-          <div class="admin-table glass-soft" v-if="isAdmin">
-            <div class="table-row table-head">
-              <span>影片 / 影院</span>
-              <span>场次</span>
-              <span>售出</span>
-              <span>当前票价</span>
-              <span>操作</span>
-            </div>
-            <div class="table-row" v-for="show in dashboard?.shows || []" :key="show.id">
-              <span><strong>{{ show.movieTitle }}</strong><small>{{ show.cinema }}</small></span>
-              <span>{{ show.startsAt }}<small>{{ show.hall }}</small></span>
-              <span>{{ show.soldSeats }}/{{ show.totalSeats }}</span>
-              <input type="number" min="1" max="999" v-model.number="priceDrafts[show.id]" />
-              <button @click="updatePrice(show)">保存</button>
-            </div>
+        <div class="admin-table glass-soft" v-if="isAdmin">
+          <div class="table-row table-head">
+            <span>影片 / 影院</span>
+            <span>场次</span>
+            <span>原始票价(从库)</span>
+            <span>优惠后价格(Nacos)</span>
+            <span>操作</span>
           </div>
-          <p class="notice" v-if="notice">{{ notice }}</p>
-        </section>
-      </main>
-    </div>
-    <script src="/vendor/vue.global.prod.js"></script>
-    <script type="module" src="/js/pages/admin-shows.js"></script>
-  </body>
+          <div class="table-row" v-for="show in dashboard?.shows || []" :key="show.id">
+            <span><strong>{{ show.movieTitle }}</strong><small>{{ show.cinema }}</small></span>
+            <span>{{ show.startsAt }}<small>{{ show.hall }}</small></span>
+            <input type="number" min="1" max="999" v-model.number="priceDrafts[show.id]" />
+            <span style="color:#f56c6c;font-weight:bold;">{{ show.realPrice }}</span>
+            <button @click="updatePrice(show)">保存</button>
+          </div>
+        </div>
+        <p class="notice" v-if="notice">{{ notice }}</p>
+      </section>
+    </main>
+  </div>
+  <script src="/vendor/vue.global.prod.js"></script>
+  <script type="module" src="/js/pages/admin-shows.js"></script>
+</body>
 </html>
