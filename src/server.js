@@ -1,3 +1,6 @@
+const sdk = require("./tracing");
+sdk.start();
+
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -731,12 +734,14 @@ app.get("/api/ops/containers", (_req, res) => {
     ...Object.fromEntries((pods.slice(0, 4)).map((p) => [p.name, +(0.15 + Math.random() * 0.35).toFixed(2)])),
   }));
 
+  const isK8s = !!process.env.KUBERNETES_SERVICE_HOST;
   res.json({
     summary: { total: pods.length, running: pods.length, pending: 0, failed: 0 },
     pods,
     cpuHistory,
     deployment: k8s || { replicas: 2, strategy: "RollingUpdate", image: "cinema-ticket-availability-demo:latest", host: "cinema.local" },
-    source: compose ? "docker-compose.yml" : "built-in",
+    runtime: isK8s ? "kubernetes" : (compose ? "docker-compose" : "bare-metal"),
+    source: compose ? "docker-compose.yml" : "k8s/cinema-app.yaml",
   });
 });
 
@@ -825,6 +830,7 @@ app.get("/api/ops/observability", async (_req, res) => {
       otelCollector: "active",
       prometheus: "running",
       grafana: "configured",
+      otelSDK: "active (NodeSDK + auto-instrumentations + OTLP exporter)",
       metricsCount: metrics.length,
       ordersCreated: ordersCreatedMetric ? ordersCreatedMetric.values[0]?.value || 0 : 0,
       ordersPaid: ordersPaidMetric ? ordersPaidMetric.values[0]?.value || 0 : 0,
