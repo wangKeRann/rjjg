@@ -427,12 +427,29 @@ app.get("/api/shows/:showId/seats", async (req, res, next) => {
 
 app.post("/api/orders", requirePermission("order:create"), async (req, res, next) => {
   try {
+    // 添加防重复请求
+    const orderIdempotencyKey = `${req.user.id}_${req.body.showId}_${Date.now()}`;
+    // 简单实现：检查最近 5 秒内是否有相同用户的订单
+    const recentOrders = getOrders().filter(order => 
+      order.userId === req.user.id && 
+      order.showId === req.body.showId &&
+      Date.now() - Date.parse(order.createdAt) < 5000
+    );
+    if (recentOrders.length > 0) {
+      res.status(409).json({ error: "DUPLICATE_REQUEST", message: "请勿重复提交" });
+      return;
+    }
+    console.log("API /orders hit");
     const { showId, seats } = req.body || {};
     if (!showId || !Array.isArray(seats) || seats.length === 0) {
       res.status(400).json({ error: "INVALID_ORDER_REQUEST" });
       return;
     }
-
+    const canPass = await store.canPlaceOrder(showId, req.user.id);
+    if (!canPass) {
+      return res.status(429).json({ error: "RATE_LIMITED" });
+    }
+    console.log("step1 showId:", showId);
     const item = findShow(showId);
     if (!item) {
       res.status(404).json({ error: "SHOW_NOT_FOUND" });
@@ -459,7 +476,7 @@ app.post("/api/orders", requirePermission("order:create"), async (req, res, next
       res.status(409).json({ error: "SEAT_ALREADY_SOLD", seat: soldSeat });
       return;
     }
-
+    console.log("step2 canPlaceOrder");
     const orderId = crypto.randomUUID();
     const lockedSeats = [];
     for (const seat of uniqueSeats) {
@@ -470,6 +487,7 @@ app.post("/api/orders", requirePermission("order:create"), async (req, res, next
         return;
       }
       lockedSeats.push(seat);
+      console.log("step3 lockSeat");
     }
 
     const order = {
@@ -493,7 +511,12 @@ app.post("/api/orders", requirePermission("order:create"), async (req, res, next
     logger.info({ orderId, showId, seats: uniqueSeats, userId: req.user.id }, "order created");
     res.status(201).json({ order, lockTtlSeconds: LOCK_TTL_SECONDS });
   } catch (error) {
-    next(error);
+     console.error("ORDER ERROR:", error); 
+
+    // 如果前端是等待 JSON，必须返回 JSON，不然一直 pending
+    if (!res.headersSent) {
+        res.status(500).json({ error: "INTERNAL_SERVER_ERROR", message: error.message });
+    }
   }
 });
 
@@ -896,11 +919,12 @@ async function cancelOrder(order, reason) {
   });
   await store.publishEvent("ORDER_CANCELLED", cancelled);
   logger.info({ orderId: cancelled.id, reason }, "order cancelled");
+  await Promise.all(order.seats.map((seat) => store.releaseSeat(order.showId, seat, order.id)));
   return cancelled;
 }
 
 async function start() {
-  await store.connect();
+  await store.init();
   redisModeGauge.set(store.mode === "redis" ? 1 : 0);
   
   // 初始化搜索服务
