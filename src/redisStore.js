@@ -1,4 +1,5 @@
 const { createClient } = require("redis");
+const zookeeper = require("node-zookeeper-client");
 
 // 缓存指标跟踪类
 class CacheMetrics {
@@ -17,6 +18,7 @@ class CacheMetrics {
       cinemas: 0,
       movie: 0
     };
+    this.zkReady = false;
   }
 
   recordCacheHit(type, isRedis = true) {
@@ -75,6 +77,131 @@ class RedisStore {
     }
   }
 
+async init() {
+  await this.connect();  // 先连 Redis
+  await this.connectZooKeeper();  // 再连 ZK
+}
+
+async connectZooKeeper() {
+  this.zkClient = zookeeper.createClient("127.0.0.1:2181");
+  
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error("ZooKeeper connection timeout"));
+    }, 5000);
+    
+    this.zkClient.once("connected", () => {
+      this.zkReady = true;
+      this.logger.info("ZooKeeper connected");
+      clearTimeout(timeout);
+      resolve();
+    });
+    
+    this.zkClient.once("error", (err) => {
+      clearTimeout(timeout);
+      reject(err);
+    });
+    
+    this.zkClient.connect();
+  });
+}
+
+ensurePath(path) {
+  const parts = path.split("/").filter(Boolean);
+  let current = "";
+
+  for (const part of parts) {
+    current += "/" + part;
+
+    this.zkClient.exists(current, (err, stat) => {
+      if (!stat) {
+        if (!this.zkClient || !this.zkReady) {
+          this.logger.warn("ZooKeeper not ready, fallback to Redis only");
+          return this.lockSeatWithoutZK(showId, seat, orderId, ttlSeconds);
+        }
+      }
+    });
+  }
+}
+
+async lockSeatWithoutZK(showId, seat, orderId, ttlSeconds) {
+  if (this.client) {
+    const result = await this.client.set(this.lockKey(showId, seat), orderId, {
+      NX: true,
+      EX: ttlSeconds,
+    });
+    return result === "OK";
+  }
+
+  this.cleanupMemoryLocks();
+
+  const key = this.lockKey(showId, seat);
+  if (this.memoryLocks.has(key)) return false;
+
+  this.memoryLocks.set(key, {
+    owner: orderId,
+    expiresAt: Date.now() + ttlSeconds * 1000,
+  });
+
+  return true;
+}
+
+// RedisStore.js
+async acquireGlobalLock(lockName, ttl = 5000) {
+  if (!this.zkClient) {
+    this.zkClient = zookeeper.createClient("127.0.0.1:2181");
+    this.zkClient.connect();
+  }
+
+  const path = `/locks/${lockName}`;
+
+  return new Promise((resolve, reject) => {
+    this.zkClient.create(
+      path,
+      Buffer.from("locked"),
+      zookeeper.CreateMode.EPHEMERAL,
+      (error) => {
+        if (error) {
+          if (error.getCode() === zookeeper.Exception.NODE_EXISTS) {
+            return resolve(false); // 已经有锁
+          }
+          return reject(error);
+        }
+        resolve(true); // 成功获取锁
+      }
+    );
+  });
+}
+
+  releaseGlobalLock(lockName) {
+    const path = `/locks/${lockName}`;
+
+    this.zkClient.remove(path, -1, (err) => {
+      if (err) {
+        this.logger.warn({ err: err.message }, "ZK unlock failed");
+      }
+    });
+  }
+
+async canPlaceOrder(showId, userId) {
+  const key = `limit:${showId}:${Math.floor(Date.now() / 10000)}`;
+
+  let count;
+
+  console.log("canPlaceOrder hit, mode =", this.mode, "client =", this.client?.isOpen);
+
+  // ✅必须保证 Redis 真正可用
+  if (this.client && this.mode === "redis" && this.client.isOpen) {
+    count = await this.client.incr(key);
+    if (count === 1) await this.client.expire(key, 10);
+  } else {
+    count = (this.memoryCache.get(key) || 0) + 1;
+    this.memoryCache.set(key, count);
+  }
+
+  return count <= 5;
+}
+
   async connect() {
     const client = createClient({
       RESP: 2,
@@ -83,6 +210,10 @@ class RedisStore {
         connectTimeout: 1200,
         reconnectStrategy: false,
       },
+      sentinels: [
+        { host: "127.0.0.1", port: 26379 },
+        { host: "127.0.0.1", port: 26380 }
+      ]
     });
 
     client.on("error", (error) => {
@@ -119,26 +250,90 @@ class RedisStore {
     }
   }
 
-  async lockSeat(showId, seat, orderId, ttlSeconds) {
-    if (this.client) {
-      const result = await this.client.set(this.lockKey(showId, seat), orderId, {
-        NX: true,
-        EX: ttlSeconds,
+// 添加新方法：递归创建路径
+async ensurePathExists(path) {
+  const parts = path.split("/").filter(Boolean);
+  let current = "";
+  
+  for (const part of parts) {
+    current += "/" + part;
+    
+    // 检查节点是否存在
+    const exists = await new Promise((resolve) => {
+      this.zkClient.exists(current, (err, stat) => {
+        resolve(!!stat);
       });
-      return result === "OK";
-    }
-
-    this.cleanupMemoryLocks();
-    const key = this.lockKey(showId, seat);
-    if (this.memoryLocks.has(key)) {
-      return false;
-    }
-    this.memoryLocks.set(key, {
-      owner: orderId,
-      expiresAt: Date.now() + ttlSeconds * 1000,
     });
-    return true;
+    
+    if (!exists) {
+      // 创建持久节点（父节点应该是持久的，只有叶子节点是 EPHEMERAL）
+      await new Promise((resolve, reject) => {
+        this.zkClient.create(current, Buffer.from(""), zookeeper.CreateMode.PERSISTENT, (err) => {
+          if (err && err.getCode() !== zookeeper.Exception.NODE_EXISTS) {
+            reject(err);
+          } else {
+            resolve();
+          }
+        });
+      });
+    }
   }
+}
+
+// 修改 lockSeat 方法
+async lockSeat(showId, seat, orderId, ttlSeconds) {
+  const zkPath = `/locks/seat/${showId}/${seat}`;
+  
+  if (!this.zkClient || !this.zkReady) {
+    this.logger.warn("ZooKeeper not ready, fallback to Redis only");
+    return this.lockSeatWithoutZK(showId, seat, orderId, ttlSeconds);
+  }
+  
+  // 确保父路径存在
+  try {
+    await this.ensurePathExists(`/locks/seat/${showId}`);
+  } catch (error) {
+    this.logger.error({ error: error.message }, "Failed to create ZK parent path");
+    return this.lockSeatWithoutZK(showId, seat, orderId, ttlSeconds);
+  }
+  
+  return new Promise((resolve) => {
+    this.zkClient.create(
+      zkPath,
+      Buffer.from(orderId),
+      zookeeper.CreateMode.EPHEMERAL,
+      async (err) => {
+        if (err) {
+          this.logger.warn({ showId, seat, orderId, error: err.message }, "ZK 锁座失败");
+          return resolve(false);
+        }
+        
+        // 成功后的逻辑...
+        try {
+          if (this.client) {
+            await this.client.set(this.lockKey(showId, seat), orderId, {
+              NX: true,
+              EX: ttlSeconds,
+            });
+          } else {
+            this.cleanupMemoryLocks();
+            const key = this.lockKey(showId, seat);
+            if (this.memoryLocks.has(key)) return resolve(false);
+            
+            this.memoryLocks.set(key, {
+              owner: orderId,
+              expiresAt: Date.now() + ttlSeconds * 1000,
+            });
+          }
+          
+          resolve(true);
+        } catch (error) {
+          resolve(false);
+        }
+      }
+    );
+  });
+}
 
   async getLockOwner(showId, seat) {
     if (this.client) {

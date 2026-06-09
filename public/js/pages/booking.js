@@ -133,13 +133,16 @@ createApp({
         return;
       }
 
+      console.log("1. start createOrder");
       this.busy = true;
       try {
+        console.log("2. before api");
         const result = await apiFetch("/api/orders", {
           method: "POST",
           headers: { "Content-Type": "application/json", ...authHeaders() },
           body: JSON.stringify({ showId: this.selectedShowId, seats: this.selectedSeats }),
         });
+        console.log("2 result =", result);
         this.currentOrder = result.order;
         this.lockTtlSeconds = result.lockTtlSeconds;
         this.selectedSeats = [...result.order.seats];
@@ -147,11 +150,13 @@ createApp({
         // 启动锁座倒计时
         this.startLockCountdown(result.lockTtlSeconds);
         await this.loadSeats(false);
+        console.log("3. after api", result);
       } catch (error) {
         this.currentOrder = null;
         this.notice = `下单失败：${error.message}`;
         await this.loadSeats(false).catch(() => {});
       } finally {
+        console.log("4. finally");
         this.busy = false;
       }
     },
