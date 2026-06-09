@@ -1,3 +1,9 @@
+const sdk = require("./tracing");
+sdk.start();
+
+//数据库读写分离
+const { readDatabase, updateDatabase } = require('./db-rw-separation');
+
 const { SentinelManager } = require('./sentinel');
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -26,6 +32,10 @@ const { orderLogger } = require('./logger');
 const { payOrder: orderPay, cancelOrder: orderCancel } = require('./orderService');
 
 const app = express();
+
+//引入模拟 Nacos 配置中心
+const nacos = require('./nacos-config');
+
 const orders = {
   clear() {
     const { resetDatabase } = require("./database");
@@ -656,39 +666,111 @@ app.get("/api/my/orders", requirePermission("order:read:self"), (req, res) => {
   res.json({ orders: rows });
 });
 
+// 修复 /api/admin/dashboard 接口
 app.get("/api/admin/dashboard", requirePermission("admin:dashboard"), async (_req, res, next) => {
   try {
-    res.json(await buildAdminDashboard());
+    const originData = await buildAdminDashboard();
+    const { priceRate } = nacos.getConfig();
+
+    if (originData.shows && Array.isArray(originData.shows)) {
+      originData.shows = originData.shows.map(show => ({
+        ...show,
+        price: show.price, // 原始价（读写分离用）
+        realPrice: (show.price * priceRate).toFixed(2) // 优惠价（Nacos用）
+      }));
+    }
+
+    res.json(originData);
   } catch (error) {
     next(error);
   }
 });
 
+//修改电影票价（读写分离）
 app.patch("/api/admin/shows/:showId/price", requirePermission("show:price:update"), async (req, res, next) => {
   try {
     const price = Number(req.body?.price);
     if (!Number.isFinite(price) || price < 1 || price > 999) {
-      res.status(400).json({ error: "INVALID_PRICE", message: "票价需要在 1 到 999 之间" });
-      return;
+      return res.status(400).json({ error: "INVALID_PRICE", message: "票价需要在 1 到 999 之间" });
     }
-    const show = updateShowPrice(req.params.showId, Math.round(price));
-    if (!show) {
-      res.status(404).json({ error: "SHOW_NOT_FOUND" });
-      return;
-    }
-    await store.invalidateBrowseCache();
-    const item = findShow(show.id);
-    await store.publishEvent("PRICE_UPDATED", {
-      showId: show.id,
-      movieTitle: item.movie.title,
-      price: show.price,
-      operator: req.user.displayName,
+
+    //写主库
+    const updatedShow = updateDatabase((db) => {
+      const show = db.shows.find((item) => item.id === req.params.showId);
+      if (!show) return null;
+      
+      show.price = Math.round(price);
+      show.lastUpdatedBy = req.user.displayName;
+      show.updatedAt = new Date().toISOString();
+      return show;
     });
-    res.json({ show: publicShow(item.movie, show) });
+
+    if (!updatedShow) {
+      return res.status(404).json({ error: "SHOW_NOT_FOUND" });
+    }
+
+    // 读从库
+    const freshDb = readDatabase();
+    const freshShow = freshDb.shows.find(s => s.id === req.params.showId);
+    const movie = freshDb.movies.find(m => m.id === freshShow.movieId);
+
+    if (store.publishEvent) {
+      await store.publishEvent("PRICE_UPDATED", {
+        showId: freshShow.id,
+        movieTitle: movie ? movie.title : "未知电影",
+        price: freshShow.price,
+        operator: req.user.displayName,
+      });
+    }
+    // 返回给前端的数据
+    res.json({ 
+      show: {
+        id: freshShow.id,
+        movieTitle: movie ? movie.title : "未知电影",
+        price: freshShow.price
+      } 
+    });
   } catch (error) {
+    console.error("调价接口内部崩溃:", error); 
     next(error);
   }
 });
+
+// ========== Nacos新增接口 ==========
+// 获取当前Nacos配置
+app.get('/api/admin/nacos-config', requirePermission("admin:dashboard"), (req, res) => {
+  res.json(nacos.getConfig());
+});
+app.patch('/api/admin/nacos-price-rate', (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== "object") {
+      return res.status(400).json({ error: "无效请求体" });
+    }
+
+    const { priceRate } = req.body;
+    if (typeof priceRate !== "number" || priceRate < 0.1 || priceRate > 2) {
+      return res.status(400).json({ error: "无效倍率，需在 0.1-2 之间" });
+    }
+
+    //更新配置
+    nacos.publishConfig({ priceRate });
+    console.log("[Nacos] 票价倍率已变更，当前倍率：", nacos.getConfig().priceRate);
+
+    res.json({
+      code: 200,
+      msg: "票价倍率配置更新成功",
+      data: nacos.getConfig()
+    });
+  } catch (err) {
+    console.error("Nacos 配置接口错误:", err);
+    res.status(500).json({ error: "INTERNAL_SERVER_ERROR" });
+  }
+});
+
+nacos.subscribe(cfg => {
+  console.log("[Nacos] 票价倍率已变更，当前倍率：", cfg.priceRate);
+});
+// ==========================================================
 
 // 缓存统计API
 app.get("/api/cache/stats", async (_req, res, next) => {
@@ -803,12 +885,14 @@ app.get("/api/ops/containers", (_req, res) => {
     ...Object.fromEntries((pods.slice(0, 4)).map((p) => [p.name, +(0.15 + Math.random() * 0.35).toFixed(2)])),
   }));
 
+  const isK8s = !!process.env.KUBERNETES_SERVICE_HOST;
   res.json({
     summary: { total: pods.length, running: pods.length, pending: 0, failed: 0 },
     pods,
     cpuHistory,
     deployment: k8s || { replicas: 2, strategy: "RollingUpdate", image: "cinema-ticket-availability-demo:latest", host: "cinema.local" },
-    source: compose ? "docker-compose.yml" : "built-in",
+    runtime: isK8s ? "kubernetes" : (compose ? "docker-compose" : "bare-metal"),
+    source: compose ? "docker-compose.yml" : "k8s/cinema-app.yaml",
   });
 });
 
@@ -897,6 +981,7 @@ app.get("/api/ops/observability", async (_req, res) => {
       otelCollector: "active",
       prometheus: "running",
       grafana: "configured",
+      otelSDK: "active (NodeSDK + auto-instrumentations + OTLP exporter)",
       metricsCount: metrics.length,
       ordersCreated: ordersCreatedMetric ? ordersCreatedMetric.values[0]?.value || 0 : 0,
       ordersPaid: ordersPaidMetric ? ordersPaidMetric.values[0]?.value || 0 : 0,
@@ -936,13 +1021,28 @@ function publicShow(movie, show) {
 }
 
 async function buildAdminDashboard() {
-  const allOrders = getOrders();
-  const paidOrders = allOrders.filter((order) => order.status === "PAID");
-  const pendingOrders = allOrders.filter((order) => order.status === "PENDING_PAYMENT");
-  const shows = getShowsForAdmin();
+  const db = readDatabase();
+  const allOrders = db.orders;
+  const paidOrders = allOrders.filter(order => order.status === "PAID");
+  const pendingOrders = allOrders.filter(order => order.status === "PENDING_PAYMENT");
+
+  const shows = db.shows.map(show => {
+    const movie = db.movies.find(m => m.id === show.movieId);
+    return {
+      id: show.id,
+      movieTitle: movie?.title || "未知影片",
+      startsAt: show.startsAt,
+      cinema: show.cinema,
+      hall: show.hall,
+      price: show.price, // 直接用从库的price
+      soldSeats: show.sold.length,
+      totalSeats: show.seats.length
+    };
+  });
+
   return {
     overview: {
-      movies: getMovies().length,
+      movies: db.movies.length,
       shows: shows.length,
       paidOrders: paidOrders.length,
       pendingOrders: pendingOrders.length,
@@ -955,6 +1055,7 @@ async function buildAdminDashboard() {
       .slice(0, 30),
   };
 }
+
 
 async function cancelOrder(order, reason) {
   if (order.status !== "PENDING_PAYMENT") {

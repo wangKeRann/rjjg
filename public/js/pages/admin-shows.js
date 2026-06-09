@@ -1,11 +1,10 @@
 import { apiFetch, authHeaders, getSession, logout } from "../common.js";
-
 const { createApp } = Vue;
 
 createApp({
   data() {
     return {
-      session: getSession(),
+      session: {},
       logout,
       dashboard: null,
       priceDrafts: {},
@@ -15,30 +14,83 @@ createApp({
   computed: {
     isAdmin() {
       return this.session?.user?.role === "ADMIN";
-    },
+    }
   },
   async mounted() {
-    await this.loadDashboard();
+    this.session = getSession();
+    if (this.isAdmin) {
+      // 页面加载时拉取当前Nacos配置，同步到输入框
+      try {
+        const config = await apiFetch("/api/admin/nacos-config", { headers: authHeaders() });
+        const rateInput = document.getElementById('priceRate');
+        if (rateInput && config.priceRate != null) {
+          rateInput.value = config.priceRate;
+        }
+      } catch (e) {
+        console.log("读取配置失败", e);
+      }
+      await this.loadDashboard();
+    }
   },
   methods: {
     async loadDashboard() {
       if (!this.isAdmin) return;
-      this.dashboard = await apiFetch("/api/admin/dashboard", { headers: authHeaders() });
-      this.priceDrafts = Object.fromEntries(this.dashboard.shows.map((show) => [show.id, show.price]));
+      this.notice = "正在从从库加载数据...";
+      try {
+        const res = await apiFetch("/api/admin/dashboard", { headers: authHeaders() });
+        this.dashboard = res;
+        this.priceDrafts = {};
+        res.shows.forEach(show => {
+          this.priceDrafts[show.id] = Number(show.price);
+        });
+        this.notice = "数据加载完成（数据源：从库）";
+      } catch (err) {
+        this.notice = "加载数据失败";
+        console.error("加载仪表盘异常：", err);
+      }
     },
+
     async updatePrice(show) {
       try {
         const price = this.priceDrafts[show.id];
         await apiFetch(`/api/admin/shows/${show.id}/price`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json", ...authHeaders() },
-          body: JSON.stringify({ price }),
+          body: JSON.stringify({ price })
         });
-        this.notice = `${show.movieTitle} 票价已调整为 ￥${price}`;
         await this.loadDashboard();
       } catch (error) {
         this.notice = `调价失败：${error.message}`;
+        console.error("调价出错：", error);
       }
     },
-  },
+
+    async updatePriceRate() {
+      const priceRateInput = document.getElementById('priceRate');
+      const rateTip = document.getElementById('rateTip');
+      if (!priceRateInput || !rateTip) return;
+
+      const priceRate = Number(priceRateInput.value);
+      if (isNaN(priceRate) || priceRate < 0.1 || priceRate > 2) {
+        rateTip.innerText = " 倍率需在 0.1-2 之间";
+        return;
+      }
+
+      try {
+        await apiFetch("/api/admin/nacos-price-rate", {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            ...authHeaders()
+          },
+          body: JSON.stringify({ priceRate })
+        });
+        rateTip.innerText = " 配置生效";
+        await this.loadDashboard();
+      } catch (err) {
+        rateTip.innerText = " 配置失败：" + err.message;
+        console.error("配置错误：", err);
+      }
+    }
+  }
 }).mount("#app");

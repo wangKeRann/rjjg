@@ -5,8 +5,11 @@ services:
     environment:
       - PORT=3000
       - REDIS_URL=redis://redis:6379
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_SERVICE_NAME=cinema-web-a
     depends_on:
       - redis
+      - otel-collector
     ports:
       - "3001:3000"
 
@@ -16,8 +19,11 @@ services:
     environment:
       - PORT=3000
       - REDIS_URL=redis://redis:6379
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_SERVICE_NAME=cinema-web-b
     depends_on:
       - redis
+      - otel-collector
     ports:
       - "3002:3000"
 
@@ -100,6 +106,26 @@ services:
     ports:
       - "5000:5000"
 
+  jaeger:
+    image: jaegertracing/all-in-one:1.62
+    container_name: cinema-jaeger
+    ports:
+      - "16686:16686"
+      - "14250:14250"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.111.0
+    container_name: cinema-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel-collector/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      - jaeger
+
   prometheus:
     image: prom/prometheus:v2.54.1
     container_name: cinema-prometheus
@@ -107,6 +133,7 @@ services:
       - "9090:9090"
     volumes:
       - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/otel-collector/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
     depends_on:
       - cinema-web-a
       - cinema-web-b
