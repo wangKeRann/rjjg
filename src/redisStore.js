@@ -83,7 +83,7 @@ async init() {
 }
 
 async connectZooKeeper() {
-  this.zkClient = zookeeper.createClient("127.0.0.1:2181");
+  this.zkClient = zookeeper.createClient("zookeeper:2181");
   
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
