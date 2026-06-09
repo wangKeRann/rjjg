@@ -35,6 +35,8 @@ const app = express();
 
 //引入模拟 Nacos 配置中心
 const nacos = require('./nacos-config');
+// 统一计算优惠票价工具
+const getPriceRate = () => nacos.getConfig().priceRate;
 
 const orders = {
   clear() {
@@ -301,16 +303,61 @@ app.get("/api/me", requireAuth(), (req, res) => {
   res.json({ user: req.user, permissions: req.auth.permissions, claims: req.auth.claims });
 });
 
+// app.get("/api/movies", async (_req, res) => {
+//   try {
+//     const cachedMovies = await store.getMoviesList();
+//     if (cachedMovies) {
+//       logger.debug("从缓存获取影片列表");
+//       res.json({ movies: cachedMovies, cached: true, source: store.mode });
+//       return;
+//     }
+
+//     const movies = getMovies();
+
+//     await store.cacheMoviesList(movies);
+//     const hotMovies = [...movies].sort((a, b) => b.heat - a.heat).slice(0, 10);
+//     await store.cacheHotMovies(hotMovies);
+//     logger.debug("影片列表与热门影片已写入缓存");
+
+//     res.json({ movies, cached: false, source: store.mode });
+//   } catch (error) {
+//     logger.error({ error: error.message }, "获取影片数据失败");
+//     res.json({ movies: getMovies(), cached: false, error: "缓存服务暂时不可用" });
+//   }
+// });
+
 app.get("/api/movies", async (_req, res) => {
   try {
     const cachedMovies = await store.getMoviesList();
+    const rate = getPriceRate(); // 获取当前倍率
+
     if (cachedMovies) {
       logger.debug("从缓存获取影片列表");
-      res.json({ movies: cachedMovies, cached: true, source: store.mode });
+      // 缓存数据也拼接优惠价
+      const list = cachedMovies.map(movie => {
+        if (movie.shows && Array.isArray(movie.shows)) {
+          movie.shows = movie.shows.map(show => ({
+            ...show,
+            realPrice: (show.price * rate).toFixed(2)
+          }));
+        }
+        return movie;
+      });
+      res.json({ movies: list, cached: true, source: store.mode });
       return;
     }
 
-    const movies = getMovies();
+    const movies = getMovies().map(movie => {
+      // 给每个场次加上优惠价
+      if (movie.shows && Array.isArray(movie.shows)) {
+        movie.shows = movie.shows.map(show => ({
+          ...show,
+          realPrice: (show.price * rate).toFixed(2)
+        }));
+      }
+      return movie;
+    });
+
     await store.cacheMoviesList(movies);
     const hotMovies = [...movies].sort((a, b) => b.heat - a.heat).slice(0, 10);
     await store.cacheHotMovies(hotMovies);
@@ -319,7 +366,18 @@ app.get("/api/movies", async (_req, res) => {
     res.json({ movies, cached: false, source: store.mode });
   } catch (error) {
     logger.error({ error: error.message }, "获取影片数据失败");
-    res.json({ movies: getMovies(), cached: false, error: "缓存服务暂时不可用" });
+    const rate = getPriceRate();
+    // 降级分支也补全优惠价
+    const movies = getMovies().map(movie => {
+      if (movie.shows && Array.isArray(movie.shows)) {
+        movie.shows = movie.shows.map(show => ({
+          ...show,
+          realPrice: (show.price * rate).toFixed(2)
+        }));
+      }
+      return movie;
+    });
+    res.json({ movies: movies, cached: false, error: "缓存服务暂时不可用" });
   }
 });
 
