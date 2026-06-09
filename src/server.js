@@ -21,6 +21,9 @@ const {
   updateOrder,
   updateShowPrice,
 } = require("./catalog");
+const { connectRabbitMQ, sendOrderEvent, getConnectionStatus } = require('./rabbitmqClient');
+const { orderLogger } = require('./logger');
+const { payOrder: orderPay, cancelOrder: orderCancel } = require('./orderService');
 
 const app = express();
 const orders = {
@@ -974,6 +977,14 @@ async function start() {
   await searchService.connect();
   redisModeGauge.set(store.mode === "redis" ? 1 : 0);
   elasticsearchModeGauge.set(searchService.mode === "elasticsearch" ? 1 : 0);
+
+  // 初始化 RabbitMQ（非阻塞，失败不影响主服务）
+  try {
+    await connectRabbitMQ();
+    logger.info('RabbitMQ 初始化完成');
+  } catch (error) {
+    logger.warn('RabbitMQ 初始化失败，将使用 Outbox 队列模式', { error: error.message });
+  }
   
   // 初始化搜索服务
   await searchService.connect();
