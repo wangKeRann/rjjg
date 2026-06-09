@@ -25,6 +25,54 @@ async function login(server, portal, loginName, password) {
   return result.body.token;
 }
 
+async function loginBody(server, portal, loginName, password) {
+  const result = await request(server, "/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ portal, login: loginName, password }),
+  });
+  assert.equal(result.response.status, 200);
+  return result.body;
+}
+
+function decodeJwtPayload(token) {
+  const parts = token.split(".");
+  assert.equal(parts.length, 3);
+  return JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+}
+
+test("login issues jwt claims, rbac permissions, and logout revokes the token", async () => {
+  await store.connect();
+  const server = await listen();
+
+  try {
+    const session = await loginBody(server, "admin", "admin", "admin123");
+    assert.equal(session.tokenType, "Bearer");
+    assert.equal(session.user.role, "ADMIN");
+    assert.ok(session.permissions.includes("show:price:update"));
+
+    const claims = decodeJwtPayload(session.token);
+    assert.equal(claims.role, "ADMIN");
+    assert.equal(claims.sub, session.user.id);
+    assert.ok(claims.permissions.includes("admin:dashboard"));
+    assert.ok(claims.exp > Math.floor(Date.now() / 1000));
+
+    const headers = { Authorization: `Bearer ${session.token}` };
+    const profile = await request(server, "/api/me", { headers });
+    assert.equal(profile.response.status, 200);
+    assert.ok(profile.body.permissions.includes("ops:view"));
+
+    const logout = await request(server, "/api/auth/logout", { method: "POST", headers });
+    assert.equal(logout.response.status, 200);
+
+    const revoked = await request(server, "/api/me", { headers });
+    assert.equal(revoked.response.status, 401);
+  } finally {
+    server.close();
+    await store.close();
+  }
+});
+
 test("customer must login before ordering, then can pay locked seats", async () => {
   await store.connect();
   orders.clear();
