@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { simpleLogger as logger, orderLogger } = require('./logger');
+const logger = require('./logger').simpleLogger;
 const { 
   addOrder, 
   findShow, 

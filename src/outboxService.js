@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { simpleLogger as logger } = require('./logger');
+const logger = require('./logger').simpleLogger;
 
 // Outbox 数据文件路径
 const OUTBOX_FILE = path.join(__dirname, '..', 'data', 'outbox.json');
