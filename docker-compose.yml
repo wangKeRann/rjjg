@@ -1,3 +1,5 @@
+version: "3.9"
+
 services:
   cinema-web-a:
     build: .
@@ -5,11 +7,8 @@ services:
     environment:
       - PORT=3000
       - REDIS_URL=redis://redis:6379
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
-      - OTEL_SERVICE_NAME=cinema-web-a
     depends_on:
       - redis
-      - otel-collector
     ports:
       - "3001:3000"
 
@@ -19,11 +18,8 @@ services:
     environment:
       - PORT=3000
       - REDIS_URL=redis://redis:6379
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
-      - OTEL_SERVICE_NAME=cinema-web-b
     depends_on:
       - redis
-      - otel-collector
     ports:
       - "3002:3000"
 
@@ -44,6 +40,12 @@ services:
     ports:
       - "6379:6379"
 
+  zookeeper:
+    image: zookeeper:3.9
+    container_name: zookeeper
+    ports:
+      - "2181:2181"
+
   rabbitmq:
     image: rabbitmq:3-management
     container_name: cinema-rabbitmq
@@ -51,89 +53,8 @@ services:
       - "5672:5672"
       - "15672:15672"
 
-  zookeeper:
-    image: zookeeper:3.9
-    container_name: cinema-zookeeper
-    ports:
-      - "2181:2181"
-
-  elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.24
-    container_name: cinema-elasticsearch
-    environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=false
-      - ES_JAVA_OPTS=-Xms512m -Xmx512m
-    ports:
-      - "9200:9200"
-
-  nacos:
-    image: nacos/nacos-server:v2.3.2
-    container_name: cinema-nacos
-    environment:
-      - MODE=standalone
-    ports:
-      - "8848:8848"
-      - "9848:9848"
-
   sentinel-dashboard:
     image: bladex/sentinel-dashboard:1.8.6
     container_name: cinema-sentinel
     ports:
       - "8858:8858"
-
-  mysql-write:
-    image: mysql:8.4
-    container_name: cinema-mysql-write
-    environment:
-      - MYSQL_ROOT_PASSWORD=cinema
-      - MYSQL_DATABASE=cinema
-    ports:
-      - "3307:3306"
-
-  mysql-read:
-    image: mysql:8.4
-    container_name: cinema-mysql-read
-    environment:
-      - MYSQL_ROOT_PASSWORD=cinema
-      - MYSQL_DATABASE=cinema
-    ports:
-      - "3308:3306"
-
-  flask-recommender:
-    build: ./services/flask-recommender
-    container_name: cinema-flask-recommender
-    ports:
-      - "5000:5000"
-
-  jaeger:
-    image: jaegertracing/all-in-one:1.62
-    container_name: cinema-jaeger
-    ports:
-      - "16686:16686"
-      - "14250:14250"
-
-  otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.111.0
-    container_name: cinema-otel-collector
-    command: ["--config=/etc/otel-collector-config.yaml"]
-    volumes:
-      - ./infra/otel-collector/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
-    ports:
-      - "4317:4317"
-      - "4318:4318"
-      - "8889:8889"
-    depends_on:
-      - jaeger
-
-  prometheus:
-    image: prom/prometheus:v2.54.1
-    container_name: cinema-prometheus
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./infra/otel-collector/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
-    depends_on:
-      - cinema-web-a
-      - cinema-web-b
