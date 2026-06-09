@@ -8,7 +8,8 @@
  */
 
 const amqp = require('amqplib');
-const { simpleLogger as logger } = require('../src/logger');
+const loggerModule = require('../src/logger');
+const logger = loggerModule.simpleLogger;
 
 const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://localhost:5672';
 const EXCHANGE_NAME = 'order_events';

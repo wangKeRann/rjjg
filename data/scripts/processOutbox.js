@@ -10,7 +10,8 @@
 
 const { getPendingEvents, markEventAsSent, markEventAsFailed } = require('../src/outboxService');
 const { publishEvent, connectRabbitMQ, getConnectionStatus } = require('../src/rabbitmqClient');
-const { simpleLogger as logger } = require('../src/logger');
+const loggerModule = require('../src/logger');
+const logger = loggerModule.simpleLogger;
 
 async function processPendingEvents() {
   const pendingEvents = getPendingEvents(50);
