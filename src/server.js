@@ -1,3 +1,4 @@
+const { SentinelManager } = require('./sentinel');
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -59,7 +60,7 @@ function writeLog(level, messageOrFields, message) {
 
 const store = new RedisStore(logger);
 const searchService = new SearchService(logger);
-
+const sentinelManager = new SentinelManager(store, searchService, logger);
 promClient.collectDefaultMetrics();
 const httpDuration = new promClient.Histogram({
   name: "cinema_http_request_duration_seconds",
@@ -248,6 +249,11 @@ app.get("/api/health", async (_req, res) => {
       hitRate: cacheStats.metrics?.hitRate ?? 0,
       enabled: true,
     },
+    sentinel: {
+      degradationLevel: sentinelStatus.degradation.level,
+      degradationStrategy: sentinelStatus.degradation.strategy,
+      circuitBreakers: Object.keys(sentinelStatus.circuitBreakers).length,
+    },
     mq: store.mode === "redis" ? "Redis List queue: cinema-booking-events" : "in-memory event queue",
     search: searchService.mode === "elasticsearch" ? "Elasticsearch indices: movies, cinemas" : "in-memory fallback",
     time: new Date().toISOString(),
@@ -425,98 +431,138 @@ app.get("/api/shows/:showId/seats", async (req, res, next) => {
   }
 });
 
-app.post("/api/orders", requirePermission("order:create"), async (req, res, next) => {
+// 修改订单接口，使用 Sentinel 保护
+app.post("/api/orders", requireAuth(["CUSTOMER"]), async (req, res, next) => {
   try {
-    // 添加防重复请求
-    const orderIdempotencyKey = `${req.user.id}_${req.body.showId}_${Date.now()}`;
-    // 简单实现：检查最近 5 秒内是否有相同用户的订单
-    const recentOrders = getOrders().filter(order => 
-      order.userId === req.user.id && 
-      order.showId === req.body.showId &&
-      Date.now() - Date.parse(order.createdAt) < 5000
-    );
-    if (recentOrders.length > 0) {
-      res.status(409).json({ error: "DUPLICATE_REQUEST", message: "请勿重复提交" });
-      return;
-    }
-    console.log("API /orders hit");
     const { showId, seats } = req.body || {};
+    
     if (!showId || !Array.isArray(seats) || seats.length === 0) {
       res.status(400).json({ error: "INVALID_ORDER_REQUEST" });
       return;
     }
-    const canPass = await store.canPlaceOrder(showId, req.user.id);
-    if (!canPass) {
-      return res.status(429).json({ error: "RATE_LIMITED" });
+    
+    // 使用 Sentinel 全链路保护
+    const result = await sentinelManager.protect(
+      'createOrder',           // 资源类型
+      showId,                  // 资源参数（用于限流）
+      req.user.id,             // 用户ID
+      async () => {            // 业务函数
+        // 原有的限流检查（已由 Sentinel 处理，可以保留或移除）
+        const canPass = await store.canPlaceOrder(showId, req.user.id);
+        if (!canPass) {
+          return { error: "RATE_LIMITED", message: "操作太频繁，请稍后再试" };
+        }
+        
+        const item = findShow(showId);
+        if (!item) {
+          throw new Error("SHOW_NOT_FOUND");
+        }
+        
+        const uniqueSeats = Array.from(new Set(seats.map((seat) => String(seat || "").trim()).filter(Boolean)));
+        if (uniqueSeats.length === 0 || uniqueSeats.length > MAX_SEATS_PER_ORDER) {
+          return { error: "INVALID_SEAT_COUNT", maxSeats: MAX_SEATS_PER_ORDER };
+        }
+        
+        const invalidSeat = uniqueSeats.find((seat) => !item.show.seats.includes(seat));
+        if (invalidSeat) {
+          return { error: "INVALID_SEAT", seat: invalidSeat };
+        }
+        
+        const soldSeat = uniqueSeats.find((seat) => item.show.sold.includes(seat));
+        if (soldSeat) {
+          return { error: "SEAT_ALREADY_SOLD", seat: soldSeat };
+        }
+        
+        const orderId = crypto.randomUUID();
+        const lockedSeats = [];
+        
+        // 获取降级策略，动态调整 TTL
+        const strategy = sentinelManager.degradationManager.getCurrentStrategy();
+        const ttlSeconds = strategy.lockTtlSeconds || LOCK_TTL_SECONDS;
+        
+        for (const seat of uniqueSeats) {
+          const locked = await store.lockSeat(showId, seat, orderId, ttlSeconds);
+          if (!locked) {
+            await Promise.all(lockedSeats.map((lockedSeat) => store.releaseSeat(showId, lockedSeat, orderId)));
+            return { error: "SEAT_TEMPORARILY_LOCKED", seat };
+          }
+          lockedSeats.push(seat);
+        }
+        
+        const order = {
+          id: orderId,
+          showId,
+          movieTitle: item.movie.title,
+          cinema: item.show.cinema,
+          hall: item.show.hall,
+          startsAt: item.show.startsAt,
+          seats: uniqueSeats,
+          userId: req.user.id,
+          userName: req.user.displayName,
+          amount: uniqueSeats.length * item.show.price,
+          status: "PENDING_PAYMENT",
+          createdAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + ttlSeconds * 1000).toISOString(),
+        };
+        
+        addOrder(order);
+        ordersCreated.inc();
+        await store.publishEvent("ORDER_CREATED", order);
+        logger.info({ orderId, showId, seats: uniqueSeats, userId: req.user.id }, "order created");
+        
+        return { order, lockTtlSeconds: ttlSeconds };
+      },
+      async () => {            // 降级函数（熔断时执行）
+        return {
+          error: "CIRCUIT_BREAKER_OPEN",
+          message: "当前场次过于火爆，系统正在恢复中，请稍后再试",
+          retryAfter: 60,
+          degraded: true
+        };
+      },
+      { seats }                // 额外选项
+    );
+    
+    if (result.error) {
+      const statusCode = result.error === "RATE_LIMITED" ? 429 : 
+                         result.error === "CIRCUIT_BREAKER_OPEN" ? 503 : 409;
+      return res.status(statusCode).json(result);
     }
-    console.log("step1 showId:", showId);
-    const item = findShow(showId);
-    if (!item) {
-      res.status(404).json({ error: "SHOW_NOT_FOUND" });
-      return;
-    }
-
-    const uniqueSeats = Array.from(new Set(seats.map((seat) => String(seat || "").trim()).filter(Boolean)));
-    if (uniqueSeats.length === 0 || uniqueSeats.length > MAX_SEATS_PER_ORDER) {
-      res.status(400).json({
-        error: "INVALID_SEAT_COUNT",
-        maxSeats: MAX_SEATS_PER_ORDER,
-      });
-      return;
-    }
-
-    const invalidSeat = uniqueSeats.find((seat) => !item.show.seats.includes(seat));
-    if (invalidSeat) {
-      res.status(400).json({ error: "INVALID_SEAT", seat: invalidSeat });
-      return;
-    }
-
-    const soldSeat = uniqueSeats.find((seat) => item.show.sold.includes(seat));
-    if (soldSeat) {
-      res.status(409).json({ error: "SEAT_ALREADY_SOLD", seat: soldSeat });
-      return;
-    }
-    console.log("step2 canPlaceOrder");
-    const orderId = crypto.randomUUID();
-    const lockedSeats = [];
-    for (const seat of uniqueSeats) {
-      const locked = await store.lockSeat(showId, seat, orderId, LOCK_TTL_SECONDS);
-      if (!locked) {
-        await Promise.all(lockedSeats.map((lockedSeat) => store.releaseSeat(showId, lockedSeat, orderId)));
-        res.status(409).json({ error: "SEAT_TEMPORARILY_LOCKED", seat });
-        return;
-      }
-      lockedSeats.push(seat);
-      console.log("step3 lockSeat");
-    }
-
-    const order = {
-      id: orderId,
-      showId,
-      movieTitle: item.movie.title,
-      cinema: item.show.cinema,
-      hall: item.show.hall,
-      startsAt: item.show.startsAt,
-      seats: uniqueSeats,
-      userId: req.user.id,
-      userName: req.user.displayName,
-      amount: uniqueSeats.length * item.show.price,
-      status: "PENDING_PAYMENT",
-      createdAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + LOCK_TTL_SECONDS * 1000).toISOString(),
-    };
-    addOrder(order);
-    ordersCreated.inc();
-    await store.publishEvent("ORDER_CREATED", order);
-    logger.info({ orderId, showId, seats: uniqueSeats, userId: req.user.id }, "order created");
-    res.status(201).json({ order, lockTtlSeconds: LOCK_TTL_SECONDS });
+    
+    res.status(201).json({ order: result.order, lockTtlSeconds: result.lockTtlSeconds });
   } catch (error) {
-     console.error("ORDER ERROR:", error); 
-
-    // 如果前端是等待 JSON，必须返回 JSON，不然一直 pending
+    console.error("ORDER ERROR:", error);
     if (!res.headersSent) {
-        res.status(500).json({ error: "INTERNAL_SERVER_ERROR", message: error.message });
+      res.status(500).json({ error: "INTERNAL_SERVER_ERROR", message: error.message });
     }
+  }
+});
+
+// 添加 Sentinel 状态查询接口
+app.get("/api/sentinel/status", requireAuth(["ADMIN"]), async (_req, res) => {
+  const status = sentinelManager.getStatus();
+  res.json(status);
+});
+
+// 添加手动设置降级级别接口
+app.post("/api/sentinel/degrade", requireAuth(["ADMIN"]), async (req, res) => {
+  const { level } = req.body;
+  const success = sentinelManager.setDegradationLevel(level);
+  if (success) {
+    res.json({ message: `Degradation level set to ${level}`, level });
+  } else {
+    res.status(400).json({ error: "Invalid level, must be 0, 1, or 2" });
+  }
+});
+
+// 添加手动重置熔断器接口
+app.post("/api/sentinel/reset/:resource", requireAuth(["ADMIN"]), async (req, res) => {
+  const { resource } = req.params;
+  const success = sentinelManager.resetCircuitBreaker(resource);
+  if (success) {
+    res.json({ message: `Circuit breaker ${resource} reset` });
+  } else {
+    res.status(404).json({ error: "Resource not found" });
   }
 });
 
@@ -925,7 +971,9 @@ async function cancelOrder(order, reason) {
 
 async function start() {
   await store.init();
+  await searchService.connect();
   redisModeGauge.set(store.mode === "redis" ? 1 : 0);
+  elasticsearchModeGauge.set(searchService.mode === "elasticsearch" ? 1 : 0);
   
   // 初始化搜索服务
   await searchService.connect();
