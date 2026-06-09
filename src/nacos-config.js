@@ -1,4 +1,3 @@
-// src/nacos-config.js 不变
 class NacosConfigSimulator {
   constructor() {
     this.config = {

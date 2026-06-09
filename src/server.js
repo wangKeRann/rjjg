@@ -663,26 +663,20 @@ app.get("/api/my/orders", requirePermission("order:read:self"), (req, res) => {
   res.json({ orders: rows });
 });
 
+// 修复 /api/admin/dashboard 接口
 app.get("/api/admin/dashboard", requirePermission("admin:dashboard"), async (_req, res, next) => {
   try {
-    // 1. 保留原有逻辑：获取仪表盘原始数据
     const originData = await buildAdminDashboard();
-    // 2. 新增：从 Nacos 获取当前票价倍率
     const { priceRate } = nacos.getConfig();
 
-    // 3. 新增：遍历场次，计算最终展示价格（基础价 * 动态倍率）
     if (originData.shows && Array.isArray(originData.shows)) {
-      originData.shows = originData.shows.map(show => {
-        return {
-          ...show,
-          // 保留原有 price（基础票价，用于读写分离调价）
-          // 新增 realPrice 作为动态计算后的实际售价
-          realPrice: (show.price * priceRate).toFixed(2)
-        };
-      });
+      originData.shows = originData.shows.map(show => ({
+        ...show,
+        price: show.price, // 原始价（读写分离用）
+        realPrice: (show.price * priceRate).toFixed(2) // 优惠价（Nacos用）
+      }));
     }
 
-    // 4. 正常返回数据，原有结构不变
     res.json(originData);
   } catch (error) {
     next(error);
@@ -697,7 +691,6 @@ app.patch("/api/admin/shows/:showId/price", requirePermission("show:price:update
       return res.status(400).json({ error: "INVALID_PRICE", message: "票价需要在 1 到 999 之间" });
     }
 
-    //使用回调函数的方式调用updateDatabase
     //写主库
     const updatedShow = updateDatabase((db) => {
       const show = db.shows.find((item) => item.id === req.params.showId);
@@ -713,8 +706,6 @@ app.patch("/api/admin/shows/:showId/price", requirePermission("show:price:update
       return res.status(404).json({ error: "SHOW_NOT_FOUND" });
     }
 
-    // 缓存失效与事件发布
-    //if (store.invalidateBrowseCache) await store.invalidateBrowseCache();
     // 读从库
     const freshDb = readDatabase();
     const freshShow = freshDb.shows.find(s => s.id === req.params.showId);
@@ -737,24 +728,42 @@ app.patch("/api/admin/shows/:showId/price", requirePermission("show:price:update
       } 
     });
   } catch (error) {
-    console.error("调价接口内部崩溃:", error); // 打印真实错误
+    console.error("调价接口内部崩溃:", error); 
     next(error);
   }
 });
 
-// ========== 以下为 Nacos 专属新增接口，原有代码完全不动 ==========
-// 1. 获取当前Nacos配置（前端查看用）
-// 新增：Nacos 配置更新接口（模拟控制台）
+// ========== Nacos新增接口 ==========
+// 获取当前Nacos配置
+app.get('/api/admin/nacos-config', requirePermission("admin:dashboard"), (req, res) => {
+  res.json(nacos.getConfig());
+});
 app.patch('/api/admin/nacos-price-rate', (req, res) => {
-  nacos.publishConfig(req.body);
-  res.json({
-    code: 200,
-    msg: "票价倍率配置更新成功",
-    data: nacos.getConfig()
-  });
+  try {
+    if (!req.body || typeof req.body !== "object") {
+      return res.status(400).json({ error: "无效请求体" });
+    }
+
+    const { priceRate } = req.body;
+    if (typeof priceRate !== "number" || priceRate < 0.1 || priceRate > 2) {
+      return res.status(400).json({ error: "无效倍率，需在 0.1-2 之间" });
+    }
+
+    //更新配置
+    nacos.publishConfig({ priceRate });
+    console.log("[Nacos] 票价倍率已变更，当前倍率：", nacos.getConfig().priceRate);
+
+    res.json({
+      code: 200,
+      msg: "票价倍率配置更新成功",
+      data: nacos.getConfig()
+    });
+  } catch (err) {
+    console.error("Nacos 配置接口错误:", err);
+    res.status(500).json({ error: "INTERNAL_SERVER_ERROR" });
+  }
 });
 
-// 可选：监听配置变更，终端打印日志
 nacos.subscribe(cfg => {
   console.log("[Nacos] 票价倍率已变更，当前倍率：", cfg.priceRate);
 });
