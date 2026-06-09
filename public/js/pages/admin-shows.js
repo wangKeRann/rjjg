@@ -4,11 +4,17 @@ const { createApp } = Vue;
 createApp({
   data() {
     return {
+     
       session: getSession(),
+     
       logout,
+     
       dashboard: null,
+     
       priceDrafts: {},
-      notice: ""
+     
+      notice: "",
+   
     };
   },
   computed: {

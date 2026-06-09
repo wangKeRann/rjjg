@@ -1,0 +1,24 @@
+spring:
+  application:
+    name: cinema-architecture-service
+  cloud:
+    nacos:
+      discovery:
+        server-addr: localhost:8848
+    sentinel:
+      transport:
+        dashboard: localhost:8858
+  rabbitmq:
+    host: localhost
+    port: 5672
+  datasource:
+    write:
+      url: jdbc:mysql://localhost:3307/cinema
+    read:
+      url: jdbc:mysql://localhost:3308/cinema
+
+elasticsearch:
+  uris: http://localhost:9200
+
+zookeeper:
+  connect-string: localhost:2181
