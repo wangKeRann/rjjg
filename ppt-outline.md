@@ -286,81 +286,152 @@ strategies = {
 
 ---
 
-## Slide 10-11：成员 D — 订单与支付页
-### 负责技术：RabbitMQ + Outbox + Slf4j/logback
+Slide 10-11：成员 D — 订单与支付页
+负责技术：RabbitMQ + Outbox Pattern + Winston 结构化日志
 
-> **技术简介**
->
-> **RabbitMQ**：基于 AMQP 协议的消息中间件，支持消息持久化、确认机制、灵活的交换机路由。本项目使用 Topic 交换机 `order_events`，将订单创建、支付、取消事件路由到 3 个持久队列：订单支付队列、统计队列、通知队列，实现业务解耦和异步处理。
->
-> **Transactional Outbox 模式**：解决"数据库写入成功但消息发送失败"的一致性问题。核心思路：订单状态变更和事件记录在同一事务中先落盘（`outbox.json`），后台再异步投递到 RabbitMQ。投递成功后标记 `sent`，失败则标记 `failed` 并最多重试 3 次，确保不丢消息。
->
-> **Slf4j + logback**：Java 生态标准的日志门面 + 日志实现组合。本项目用 Node.js 的 Winston 库模拟同样的效果：JSON 结构化输出、日志按级别分文件（combined/error/orders）、滚动归档（10MB/5 文件）、订单全生命周期日志追踪。
 
-### 实际代码实现
+【技术简介】
 
-**1. RabbitMQ 异步消息** — `src/rabbitmqClient.js`
+RabbitMQ：基于 AMQP 协议的消息中间件。本项目使用 Topic 交换机 order_events，将订单创建、支付、取消事件路由到 3 个持久队列，实现业务解耦和异步处理。
 
-```js
-async function connectRabbitMQ() {
-  connection = await amqp.connect('amqp://localhost:5672');
-  channel = await connection.createChannel();
-  await channel.assertExchange('order_events', 'topic', { durable: true });
-  // 3 个持久队列：order_paid_queue / stats_queue / notification_queue
-  await channel.bindQueue('order_paid_queue', 'order_events', 'order.paid');
-  await channel.bindQueue('stats_queue', 'order_events', 'order.*');
+Transactional Outbox 模式：解决"数据库写入成功但消息发送失败"的一致性问题。订单状态变更和事件记录在同一事务中先落盘，后台再异步投递到 RabbitMQ，投递成功标记 sent，失败则标记 failed 并重试，确保不丢消息。
+
+Winston 结构化日志：JSON 格式输出、按级别分文件（combined/error/orders）、滚动归档、订单全生命周期日志追踪。
+
+
+【核心流程】
+
+用户支付请求
+    ↓
+① 更新订单状态 + 创建 Outbox 事件（同步落盘 outbox.json）
+    ↓
+② 尝试发送到 RabbitMQ
+    ├── 成功 → 标记 sent，消费者处理（统计/通知）
+    └── 失败 → 标记 failed，等待重试
+    ↓
+③ 后台定时脚本扫描 pending/failed 事件并重发
+
+
+【关键代码实现】
+
+1. RabbitMQ 客户端 — src/rabbitmqClient.js
+
+// 声明交换机、队列并绑定
+await channel.assertExchange('order_events', 'topic', { durable: true });
+await channel.assertQueue('order_paid_queue', { durable: true });
+await channel.bindQueue('order_paid_queue', 'order_events', 'order.paid');
+
+// 发布事件（持久化）
+channel.publish(exchange, routingKey, message, { persistent: true });
+
+// 连接断开后自动重连（5秒间隔）
+connection.on('close', () => setTimeout(connectRabbitMQ, 5000));
+
+
+2. Outbox 服务 — src/outboxService.js
+
+// 创建事件（同步落盘）
+function createOutboxEvent(eventType, aggregateId, payload) {
+  const event = {
+    id: uuid(),
+    eventType,        // ORDER_CREATED / PAID / CANCELLED
+    aggregateId,
+    payload,
+    status: 'pending',   // pending → sent / failed
+    retryCount: 0,
+    maxRetries: 3,
+  };
+  outbox.events.push(event);
+  fs.writeFileSync(OUTBOX_FILE, JSON.stringify(outbox));
+  return event;
 }
-```
-- 自动重连（5s 间隔）
-- 消息持久化（`persistent: true`）
 
-**2. Transactional Outbox 模式** — `src/outboxService.js`
-
-```js
-function sendOrderEvent(eventType, order) {
-  // 1. 先创建 Outbox 记录（落盘到 outbox.json）
-  const outboxEvent = createOutboxEvent(eventType, order.id, eventData);
-  // 2. 再投递到 RabbitMQ
-  await publishEvent(routingKey, eventData, outboxEvent.id);
-  // 3. 投递成功 → 标记 sent；失败 → 标记 failed，最多重试 3 次
+// 获取待发送事件
+function getPendingEvents() {
+  return outbox.events.filter(e => e.status === 'pending' && e.retryCount < 3);
 }
-```
-- 状态机：`pending → sent / failed`，保证订单状态变更与消息投递一致性
 
-**3. Winston 结构化日志（Slf4j/logback 风格）** — `src/logger.js`
 
-```js
+3. 订单服务集成 — src/orderService.js
+
+async function payOrder(orderId) {
+  // 更新订单状态
+  const paidOrder = updateOrder(order.id, row => { row.status = 'PAID'; });
+  // 记录日志 + 发送事件（自动创建 Outbox 记录）
+  orderLogger.paid(paidOrder);
+  await sendOrderEvent('ORDER_PAID', paidOrder);
+  return paidOrder;
+}
+
+
+4. Winston 结构化日志 — src/logger.js
+
 const logger = winston.createLogger({
-  format: winston.format.json(),  // JSON 结构化输出
+  format: winston.format.json(),
   transports: [
-    new File({ filename: 'combined.log', maxsize: 10MB, maxFiles: 5 }),
+    new File({ filename: 'combined.log', maxsize: '10m', maxFiles: 5 }),
     new File({ filename: 'error.log', level: 'error' }),
-    new File({ filename: 'orders.log' }),  // 订单专用日志
+    new File({ filename: 'orders.log' }),  // 订单专用
   ],
 });
-// 订单专用 logger
-orderLogger = {
-  created(order) { logger.info(`[ORDER_CREATED] ${order.id}`, {...}); },
-  paid(order)    { logger.info(`[ORDER_PAID] ${order.id}`, {...}); },
-  cancelled(order, reason) { logger.warn(`[ORDER_CANCELLED] ${order.id}`, {...}); },
+
+const orderLogger = {
+  created(order) { logger.info(`[ORDER_CREATED] ${order.id}`, { orderId, amount }); },
+  paid(order)    { logger.info(`[ORDER_PAID] ${order.id}`, { orderId, paidAt }); },
+  cancelled(order, reason) { logger.warn(`[ORDER_CANCELLED] ${order.id}`, { reason }); },
 };
-```
 
-**4. 前端订单页** — `public/js/pages/orders.js`
-- 订单列表 + 30s 自动刷新
-- 支付/取消/超时处理
 
-**5. Spring 后端日志配置** — `spring-backend/.../logback-spring.xml`
+5. 后台重试脚本 — scripts/processOutbox.js
 
-### 对应代码文件
-| 文件 | 作用 |
-|------|------|
-| `src/rabbitmqClient.js` | RabbitMQ 连接/交换机/队列/发布/消费 |
-| `src/outboxService.js` | Outbox 事件创建/状态机/清理 |
-| `src/logger.js` | Winston JSON 日志 + 订单专用日志 |
-| `public/orders.html` | 订单页 UI |
-| `public/js/pages/orders.js` | 支付/取消/超时交互 |
-| `spring-backend/.../logback-spring.xml` | Spring 日志骨架 |
+// 每10秒扫描并重发 pending 事件
+setInterval(async () => {
+  const pendingEvents = getPendingEvents();
+  for (const event of pendingEvents) {
+    const ok = await publishEvent(routingKey, event.payload);
+    ok ? markEventAsSent(event.id) : markEventAsFailed(event.id);
+  }
+}, 10000);
+
+
+6. 前端订单页 — orders.js
+
+async pay(order) {
+  if (new Date(order.expiresAt) <= new Date()) {
+    await this.cancelExpiredOrder(order);
+    return;
+  }
+  const res = await fetch(`/api/orders/${order.id}/pay`, { method: 'POST' });
+  if (res.ok) this.loadOrders();  // 刷新列表
+}
+
+
+【日志输出示例】
+
+{"level":"info","message":"[ORDER_CREATED] f18ab08b...","orderId":"f18ab08b...","userId":"u1002","amount":58}
+{"level":"info","message":"[ORDER_PAID] f18ab08b...","paidAt":"2026-06-10T07:45:46.807Z"}
+{"level":"warn","message":"RabbitMQ 未连接，事件将仅保存在 Outbox 中"}
+
+
+【文件清单】
+
+src/rabbitmqClient.js      RabbitMQ 连接、发布、自动重连
+src/outboxService.js       Outbox 事件创建、状态管理、清理
+src/orderService.js        订单业务逻辑（创建/支付/取消）
+src/logger.js              Winston JSON 日志
+server-standalone.js       订单 API（/pay, /cancel, /orders）
+public/orders.html         订单页 UI
+public/js/pages/orders.js  订单页交互
+scripts/processOutbox.js   Outbox 后台重试脚本
+
+
+【关键设计亮点】
+
+1. 最终一致性：Outbox 模式保证订单变更与消息投递不丢失
+2. 高可用：RabbitMQ 持久化 + 自动重连 + 消息确认
+3. 可观测性：Winston JSON 日志 + 按业务分文件 + 滚动归档
+4. 优雅降级：MQ 不可用时事件暂存 Outbox，恢复后自动重发
+5. 用户体验：前端倒计时 + 自动刷新 + 超时自动取消
 
 ---
 
