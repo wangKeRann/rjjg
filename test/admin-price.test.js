@@ -1,3 +1,4 @@
+//npm test test/admin-price.test.js
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
@@ -8,19 +9,22 @@ const { readDatabase, updateDatabase } = require("../src/db-rw-separation");
 // 真实基准数据（数据库内 s2 初始价格 = 53）
 const TEST_SHOW_ID = "s2";
 const BASE_PRICE = 53;
-// 读写分离同步延迟：5秒 = 5000ms
-const SYNC_DELAY = 6000; 
+// 读写分离同步延迟：6秒
+const SYNC_DELAY = 6000;
+// Nacos 网络请求延时
+const NACOS_DELAY = 1000;
 
 /**
  * 环境重置：恢复原始票价 + 重置Nacos倍率
  */
-function resetEnv() {
+async function resetEnv() {
   updateDatabase(db => {
     const show = db.shows.find(s => s.id === TEST_SHOW_ID);
     if (show) show.price = BASE_PRICE;
     return db;
   });
-  nacos.publishConfig({ priceRate: 1.0 });
+  // 加上 await 等待发布完成
+  await nacos.publishConfig({ priceRate: 1.0 });
 }
 
 /**
@@ -33,7 +37,7 @@ function sleep(ms) {
 
 // ==================== 测试用例 ====================
 test("1. 数据库读写分离逻辑测试（适配5秒同步延迟）", async () => {
-  resetEnv();
+  await resetEnv();
 
   // 1. 读从库：初始价格
   let dbRead = readDatabase();
@@ -73,12 +77,18 @@ test("2. 票价合法性边界校验", () => {
   console.log("✅ 票价边界校验测试通过");
 });
 
-test("3. Nacos 配置 + 优惠价计算测试", () => {
-  resetEnv();
+// 改为 async 异步测试
+test("3. Nacos 配置 + 优惠价计算测试", async () => {
+  await resetEnv();
   const testRate = 0.6;
 
-  // 修改Nacos倍率
-  nacos.publishConfig({ priceRate: testRate });
+  // 等待异步发布完成
+  await nacos.publishConfig({ priceRate: testRate });
+  // 网络延时，确保 Nacos 服务端生效
+  await sleep(NACOS_DELAY);
+  // 强制刷新本地配置
+  await nacos.refreshConfig();
+
   const cfg = nacos.getConfig();
   assert.equal(cfg.priceRate, testRate);
 
@@ -89,8 +99,9 @@ test("3. Nacos 配置 + 优惠价计算测试", () => {
   console.log("✅ Nacos 配置与优惠价计算测试通过");
 });
 
-test("4. Nacos 默认配置值测试", () => {
-  resetEnv();
+test("4. Nacos 默认配置值测试", async () => {
+  await resetEnv();
+  await sleep(NACOS_DELAY);
   const cfg = nacos.getConfig();
   assert.equal(cfg.priceRate, 1.0);
   console.log("✅ Nacos 默认配置测试通过");
