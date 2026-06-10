@@ -39,6 +39,14 @@ Nginx (least_conn 负载均衡, infra/nginx/nginx.conf)
 ## Slide 4-5：成员 A — 登录与门户页
 ### 负责技术：Spring Security + Shiro + JWT/RBAC
 
+> **技术简介**
+>
+> **JWT（JSON Web Token）**：一种无状态的令牌认证机制。用户登录后服务端签发一个包含用户身份和权限的 JSON 令牌，后续请求携带此令牌即可通过验证，无需服务端维护会话。本项目使用 HS256 算法签名、8 小时过期、吊销黑名单机制。
+>
+> **Spring Security**：Java 生态最主流的安全框架，提供认证（Authentication）和授权（Authorization）两大核心能力。本项目参照其"过滤器链"思想，在 Node.js 中用中间件链实现相同的逐层拦截效果。
+>
+> **Shiro**：Apache 出品的轻量级安全框架，核心是角色（Role）→ 权限（Permission）的细粒度控制。本项目借鉴 Shiro 的 RBAC 模型，定义 `CUSTOMER` 和 `ADMIN` 两个角色，每个角色挂载不同权限点（如 `order:pay:self`、`show:price:update`）。
+
 ### 实际代码实现
 
 **1. JWT 认证（Spring Security 思想）** — `src/auth.js`
@@ -103,6 +111,14 @@ app.post("/api/orders/:orderId/pay",
 
 ## Slide 6-7：成员 B — 影片与影院浏览页
 ### 负责技术：Elasticsearch + Redis + Nginx
+
+> **技术简介**
+>
+> **Elasticsearch**：基于 Lucene 的分布式全文搜索引擎，支持倒排索引、多字段权重、模糊匹配、中文分词。本项目用它实现影片名称、标签、导演、演员的模糊搜索，并按热度/评分排序返回。ES 不可用时自动降级到内存搜索。
+>
+> **Redis**：高性能内存键值数据库，常用作缓存层。本项目用它实现 Cache Aside 缓存策略——先查 Redis，未命中再查数据库，写操作后失效相关缓存。热点数据（影片列表、搜索结果）缓存 5-10 分钟，减少数据库查询压力。
+>
+> **Nginx**：高性能 HTTP 服务器和反向代理。本项目将其部署在两个 Web 实例前面，使用 `least_conn` 算法将请求分发给连接数最少的实例，实现负载均衡。同时负责静态资源代理和 API 反向代理。
 
 ### 实际代码实现
 
@@ -176,6 +192,14 @@ server {
 
 ## Slide 8-9：成员 C — 场次与选座购票页
 ### 负责技术：Redis + Sentinel + ZooKeeper
+
+> **技术简介**
+>
+> **Redis 分布式锁**：利用 `SET key value NX EX ttl` 原子命令实现互斥锁——NX 保证仅当 key 不存在时才写入，EX 设置过期时间防止死锁。本项目用于购票时临时锁定座位（120s TTL），防止多个用户同时购买同一座位造成超卖。支付成功释放锁并标记已售，超时自动释放回池。
+>
+> **Sentinel**：阿里巴巴开源的流量治理组件，提供流量控制、熔断降级、热点参数保护三大能力。本项目完整实现了三级保护链：①限流（令牌桶全局限流 + 用户级限流，防止刷单）→ ②熔断（滑动窗口统计慢调用率和错误率，触发后执行 fallback，60s 后半开探测恢复）→ ③降级（三级策略：正常/部分降级/完全降级，自动检测系统指标切换）。
+>
+> **ZooKeeper**：分布式协调服务，通过临时节点（EPHEMERAL）实现分布式锁——客户端断开连接时节点自动删除，避免死锁。本项目用 ZK 做第二重全局锁，与 Redis 锁形成双保险。ZK 不可用时自动降级到纯 Redis 锁。
 
 ### 实际代码实现
 
@@ -265,6 +289,14 @@ strategies = {
 ## Slide 10-11：成员 D — 订单与支付页
 ### 负责技术：RabbitMQ + Outbox + Slf4j/logback
 
+> **技术简介**
+>
+> **RabbitMQ**：基于 AMQP 协议的消息中间件，支持消息持久化、确认机制、灵活的交换机路由。本项目使用 Topic 交换机 `order_events`，将订单创建、支付、取消事件路由到 3 个持久队列：订单支付队列、统计队列、通知队列，实现业务解耦和异步处理。
+>
+> **Transactional Outbox 模式**：解决"数据库写入成功但消息发送失败"的一致性问题。核心思路：订单状态变更和事件记录在同一事务中先落盘（`outbox.json`），后台再异步投递到 RabbitMQ。投递成功后标记 `sent`，失败则标记 `failed` 并最多重试 3 次，确保不丢消息。
+>
+> **Slf4j + logback**：Java 生态标准的日志门面 + 日志实现组合。本项目用 Node.js 的 Winston 库模拟同样的效果：JSON 结构化输出、日志按级别分文件（combined/error/orders）、滚动归档（10MB/5 文件）、订单全生命周期日志追踪。
+
 ### 实际代码实现
 
 **1. RabbitMQ 异步消息** — `src/rabbitmqClient.js`
@@ -334,6 +366,14 @@ orderLogger = {
 
 ## Slide 12-13：成员 E — 管理员场次调价页
 ### 负责技术：数据库读写分离 + Nacos + JUnit(node --test)
+
+> **技术简介**
+>
+> **数据库读写分离**：大型系统中，写操作（INSERT/UPDATE/DELETE）走主库，读操作（SELECT）走从库，主库数据通过主从复制同步到从库。本项目用两个 JSON 文件模拟：`cinema-db.json` 为主库（写），`cinema-db-slave.json` 为从库（读），写操作后 5s 异步同步模拟主从延迟。
+>
+> **Nacos**：阿里巴巴开源的服务发现和配置中心。本项目模拟其配置管理能力——管理员调价时 Nacos 发布新的 `priceRate`，所有订阅者（影片列表接口）实时收到推送，用户端立即看到新票价，无需重启服务。
+>
+> **JUnit**：Java 标准单元测试框架。本项目使用 Node.js 内置的 `node:test` 模块（等效 JUnit），编写 6 个集成测试用例覆盖登录/RBAC/下单/锁座/支付/调价/搜索/缓存全链路，确保核心功能可用。
 
 ### 实际代码实现
 
@@ -406,6 +446,14 @@ test("admin can view dashboard and update show price", async () => {
 ## Slide 14-15：成员 F — 管理员销售统计页
 ### 负责技术：ECharts + Prometheus + RabbitMQ(统计事件流)
 
+> **技术简介**
+>
+> **ECharts**：Apache 开源的 JavaScript 图表库，支持柱状图、折线图、饼图、雷达图等丰富图表类型。本项目使用 ECharts 渲染销售统计双图表——已售/可售堆叠柱状图对比各影片售票情况，独立柱状图展示各影片收入排行，支持窗口缩放自适应。
+>
+> **Prometheus**：云原生时代的标准监控体系，基于 Pull 模型定时抓取 `/metrics` 端点。本项目定义了 6 个自定义指标：Histogram 型 HTTP 延迟分布、Counter 型订单创建/支付计数、Gauge 型 Redis 模式状态、Counter 型缓存命中/未命中计数，5s 采集间隔，支持 Grafana 可视化。
+>
+> **RabbitMQ（统计事件流）**：利用通配符路由键 `order.*` 将全部订单事件（创建/支付/取消）以及 `price.updated` 调价事件汇聚到 `stats_queue`，由统计接口消费后实时更新各影片的售出座位数和收入数据，管理员页面刷新即可看到最新统计。
+
 ### 实际代码实现
 
 **1. ECharts 销售图表** — `public/js/pages/admin-sales.js:29-56`
@@ -476,6 +524,14 @@ await channel.bindQueue('stats_queue', 'order_events', 'price.updated');
 
 ## Slide 16-17：成员 G — 运维监控页
 ### 负责技术：Docker/Kubernetes + Nginx/负载均衡 + Grafana/OpenTelemetry
+
+> **技术简介**
+>
+> **Docker**：容器化平台，通过 Dockerfile 将应用及其依赖打包成镜像，实现"一次构建，到处运行"。本项目用 `node:20-alpine` 轻量基础镜像，多阶段优化（`npm ci --omit=dev` 排除开发依赖），`docker-compose.yml` 一键编排 9 个服务。
+>
+> **Kubernetes（K8s）**：容器编排平台，负责应用的自动部署、伸缩和管理。本项目配置了 Deployment（RollingUpdate 零停机更新）、Service（ClusterIP 内部发现）、Ingress（外部访问）、HPA（CPU 70% 触发 2→6 自动伸缩）、ConfigMap（统一配置）、livenessProbe 和 readinessProbe 健康检查。
+>
+> **OpenTelemetry**：云原生可观测性标准，统一了 Traces、Metrics、Logs 三大支柱。本项目用 Node SDK + 自动插桩 + OTLP Exporter 将 Trace 数据发送到 Collector → Jaeger，运维页面可查看最近 100 条 Span 的端到端调用链路和延迟分布。
 
 ### 实际代码实现
 
