@@ -514,40 +514,60 @@ test("admin can view dashboard and update show price", async () => {
 
 ---
 
+
 ## Slide 14-15：成员 F — 管理员销售统计页
-### 负责技术：ECharts + Prometheus + RabbitMQ(统计事件流)
+### 负责技术：ECharts + Prometheus + RabbitMQ / Redis 事件流
 
 > **技术简介**
 >
 > **ECharts**：Apache 开源的 JavaScript 图表库，支持柱状图、折线图、饼图、雷达图等丰富图表类型。本项目使用 ECharts 渲染销售统计双图表——已售/可售堆叠柱状图对比各影片售票情况，独立柱状图展示各影片收入排行，支持窗口缩放自适应。
 >
-> **Prometheus**：云原生时代的标准监控体系，基于 Pull 模型定时抓取 `/metrics` 端点。本项目定义了 6 个自定义指标：Histogram 型 HTTP 延迟分布、Counter 型订单创建/支付计数、Gauge 型 Redis 模式状态、Counter 型缓存命中/未命中计数，5s 采集间隔，支持 Grafana 可视化。
+> **Prometheus**：云原生时代的标准监控体系，基于 Pull 模型定时抓取 `/metrics` 端点。本项目使用 prom-client 定义多类自定义指标，包含 Histogram 型 HTTP 延迟分布、Counter 型订单创建/支付计数、Gauge 型 Redis / Elasticsearch 模式状态、Counter 型缓存命中/未命中计数、Gauge 型内存缓存大小等，配置5s采集间隔，对接 Grafana 完成指标可视化展示。
 >
-> **RabbitMQ（统计事件流）**：利用通配符路由键 `order.*` 将全部订单事件（创建/支付/取消）以及 `price.updated` 调价事件汇聚到 `stats_queue`，由统计接口消费后实时更新各影片的售出座位数和收入数据，管理员页面刷新即可看到最新统计。
+> **RabbitMQ / Redis 事件流**：基于 RabbitMQ Topic Exchange 搭建事件总线，`stats_queue` 绑定 `order.*`、`price.updated` 两类路由键，汇聚订单创建、支付、取消与场次调价全量业务事件。统计页面事件展示依赖该事件队列，销售统计数值并非消费队列更新，而是实时聚合库表数据；当 RabbitMQ 服务不可用时，自动降级使用 Redis List 或内存事件队列缓存业务事件，保证页面事件流正常展示。
 
 ### 实际代码实现
 
-**1. ECharts 销售图表** — `public/js/pages/admin-sales.js:29-56`
+**1. ECharts 销售图表** — `public/js/pages/admin-sales.js`
 
 ```js
 renderCharts() {
+  const movies = this.stats.movies || [];
   this.salesChart.setOption({
     series: [
-      { name: "已售", type: "bar", data: movies.map(m => m.soldSeats),
-        itemStyle: { color: "#ff6f91" } },
-      { name: "可售", type: "bar", data: movies.map(m => m.availableSeats),
-        itemStyle: { color: "#62f5ff" } },
+      {
+        name: "已售",
+        type: "bar",
+        stack: "seat",
+        data: movies.map((movie) => movie.soldSeats),
+        itemStyle: { color: "#ff6f91" },
+      },
+      {
+        name: "可售",
+        type: "bar",
+        stack: "seat",
+        data: movies.map((movie) => movie.availableSeats),
+        itemStyle: { color: "#62f5ff" },
+      },
     ],
   });
-  this.heatChart.setOption({ // 收入柱状图
-    series: [{ name: "收入", type: "bar", data: movies.map(m => m.revenue),
-      itemStyle: { color: "#ffd166" } }],
+  this.heatChart.setOption({
+    series: [
+      {
+        name: "收入",
+        type: "bar",
+        data: movies.map((movie) => movie.revenue),
+        itemStyle: { color: "#ffd166" },
+      },
+    ],
   });
 }
 ```
-- 双图表：已售/可售堆叠柱状图 + 各影片收入图
+- 双图表组合：已售/可售堆叠柱状图 + 影片收入独立柱状图
+- 图表数据来源：后端 `GET /api/admin/stats` 接口返回 movies 数组
+- 自适应能力：浏览器窗口缩放自动重绘调整图表尺寸
 
-**2. Prometheus 指标采集** — `src/server.js:79-116`
+**2. Prometheus 指标采集** — `src/server.js`
 
 ```js
 const httpDuration = new promClient.Histogram({
@@ -562,36 +582,62 @@ const ordersPaid = new promClient.Counter({
   name: "cinema_orders_paid_total",
 });
 const redisModeGauge = new promClient.Gauge({
-  name: "cinema_redis_mode", // 1=Redis / 0=内存降级
+  name: "cinema_redis_mode",
 });
-const cacheHits = new promClient.Counter({ name: "cinema_cache_hits_total" });
-const cacheMisses = new promClient.Counter({ name: "cinema_cache_misses_total" });
+const elasticsearchModeGauge = new promClient.Gauge({
+  name: "cinema_elasticsearch_mode",
+});
+const cacheHits = new promClient.Counter({
+  name: "cinema_cache_hits_total",
+  labelNames: ["type"],
+});
+const cacheMisses = new promClient.Counter({
+  name: "cinema_cache_misses_total",
+  labelNames: ["type"],
+});
+const cacheSizeGauge = new promClient.Gauge({
+  name: "cinema_cache_memory_size",
+});
 ```
-- 暴露 `/metrics` 端点供 Prometheus 抓取
-- `infra/prometheus/prometheus.yml` 配置 5s 采集间隔
+- 服务暴露 `/metrics` 指标端点，供 Prometheus 定时拉取
+- 配置文件 `infra/prometheus/prometheus.yml` 设置5秒采集间隔
+- 指标覆盖：HTTP请求性能、订单业务量、中间件运行状态、缓存命中率、内存缓存容量
 
-**3. RabbitMQ 统计事件流** — `src/rabbitmqClient.js:56-63`
+**3. RabbitMQ 统计事件流** — `src/rabbitmqClient.js`
 
 ```js
-// stats_queue 绑定到所有 order.* 事件 + price.updated
-await channel.bindQueue('stats_queue', 'order_events', 'order.*');
-await channel.bindQueue('stats_queue', 'order_events', 'price.updated');
+// 将事件队列绑定订单全量事件、价格更新事件路由
+await channel.bindQueue(queueName, EXCHANGE_NAME, "order.*");
+await channel.bindQueue(queueName, EXCHANGE_NAME, ROUTING_KEYS.PRICE_UPDATED);
 ```
+- `stats_queue` 统一接收订单创建/支付/取消、场次调价事件
+- 降级策略：RabbitMQ 故障时切换 Redis List / 内存队列存储事件
+- 页面仅读取队列展示销售动态，统计营收数据不依赖事件队列计算
 
-**4. 统计 API** — `src/server.js:879-912`
-- `GET /api/admin/stats`：各影片售出/收入/上座率 + 最近事件 + 订单汇总
+**4. 统计 API** — `src/server.js`
+- 接口地址：`GET /api/admin/stats`
+- 返回核心字段：各影片售票与营收数据、上座率、近期事件流、待支付/已支付订单数、影院总营收、Redis运行模式
+- 数据逻辑：后端实时聚合订单、影片、场次库表数据生成统计结果
+- 前端交互：页面刷新或点击刷新按钮，重新请求接口拉取最新统计数据
 
 ### 对应代码文件
 | 文件 | 作用 |
 |------|------|
-| `public/admin-sales.html` | 销售统计页 UI |
-| `public/js/pages/admin-sales.js` | ECharts 双图表渲染 |
-| `src/server.js:79-116` | Prometheus 6 个自定义指标 |
-| `src/server.js:879-912` | `/api/admin/stats` 统计接口 |
-| `infra/prometheus/prometheus.yml` | Prometheus 抓取配置 |
-| `src/rabbitmqClient.js` | stats_queue 事件绑定 |
+| `public/admin-sales.html` | 销售统计页前端UI，包含指标卡片、图表容器、订单列表、事件流展示区域 |
+| `public/js/pages/admin-sales.js` | 请求统计接口，完成ECharts双图表、订单列表、事件流渲染 |
+| `src/server.js` | 定义Prometheus全量监控指标、暴露`/metrics`端点、实现`/api/admin/stats`统计接口 |
+| `infra/prometheus/prometheus.yml` | Prometheus服务抓取配置，设置5s指标采集间隔 |
+| `src/rabbitmqClient.js` | 初始化Topic交换机，完成`stats_queue`事件路由绑定 |
+| Redis List / 内存队列 | RabbitMQ不可用时，事件流缓存降级方案 |
 
----
+### 功能总结
+成员 F 开发的管理员销售统计页面，整合数据可视化、全链路监控、实时业务事件三大能力。
+1. 基于 ECharts 可视化各影片已售、可售座位对比及票房收入排行；
+2. 通过统计接口聚合影院总营收、订单总量、影片上座率核心经营数据；
+3. 接入 Prometheus 采集HTTP、订单、缓存、中间件运行监控指标；
+4. 依托 RabbitMQ 事件总线展示实时销售动态，配套 Redis/内存队列降级保障可用性；
+最终实现管理员单页面一站式查看影院票房、售票情况、订单状态与实时销售事件。
+
 
 ## Slide 16-17：成员 G — 运维监控页
 ### 负责技术：Docker/Kubernetes + Nginx/负载均衡 + Grafana/OpenTelemetry
