@@ -1,7 +1,14 @@
-// server-standalone.js - 订单支付模块独立服务器
+// server-standalone.js - 订单支付模块独立服务器（集成 RabbitMQ、Outbox、Slf4j）
 const crypto = require("crypto");
 const path = require("path");
 const express = require("express");
+
+// 导入三个核心技术模块
+const loggerModule = require("./src/logger");
+const logger = loggerModule.simpleLogger;
+const orderLogger = loggerModule.orderLogger;
+const { createOutboxEvent, getPendingEvents, markEventAsSent } = require("./src/outboxService");
+const { connectRabbitMQ, sendOrderEvent, getConnectionStatus } = require("./src/rabbitmqClient");
 
 // 导入原有模块（复用数据读写）
 const {
@@ -89,7 +96,12 @@ app.get("/api/me", requireAuth(), (req, res) => {
 
 // ========== 健康检查 ==========
 app.get("/api/health", (_req, res) => {
-  res.json({ status: "UP", mode: "standalone", timestamp: new Date().toISOString() });
+  res.json({ 
+    status: "UP", 
+    mode: "standalone", 
+    rabbitmq: getConnectionStatus(),
+    timestamp: new Date().toISOString() 
+  });
 });
 
 // ========== 影片和影院接口 ==========
@@ -179,6 +191,12 @@ app.post("/api/orders", requireAuth(), async (req, res) => {
   };
   addOrder(order);
   
+  // 记录创建订单日志
+  orderLogger.created(order);
+  
+  // 创建 Outbox 事件
+  createOutboxEvent("ORDER_CREATED", order.id, order);
+  
   console.log(`[订单创建] ${orderId} - ${req.user.displayName}`);
   res.status(201).json({ order, lockTtlSeconds: 120 });
 });
@@ -210,9 +228,8 @@ app.post("/api/orders/:orderId/pay", requireAuth(), async (req, res) => {
     return;
   }
   
-  // 🔧 修改这里：超时后自动取消订单
+  // 超时后自动取消订单
   if (new Date(order.expiresAt) <= new Date()) {
-    // 超时：自动取消订单并释放锁
     for (const seat of order.seats) {
       releaseSeat(order.showId, seat, order.id);
     }
@@ -222,6 +239,12 @@ app.post("/api/orders/:orderId/pay", requireAuth(), async (req, res) => {
       row.cancelReason = "ORDER_EXPIRED";
       row.cancelledAt = new Date().toISOString();
     });
+    
+    // 记录取消日志
+    orderLogger.cancelled(cancelledOrder, "ORDER_EXPIRED");
+    
+    // 创建 Outbox 事件
+    createOutboxEvent("ORDER_CANCELLED", cancelledOrder.id, cancelledOrder);
     
     console.log(`[订单超时取消] ${order.id}`);
     res.status(409).json({ 
@@ -252,6 +275,17 @@ app.post("/api/orders/:orderId/pay", requireAuth(), async (req, res) => {
     row.paidAt = new Date().toISOString();
   });
   
+  // 记录支付成功日志
+  orderLogger.paid(paidOrder);
+  
+  // 创建 Outbox 事件
+  createOutboxEvent("ORDER_PAID", paidOrder.id, paidOrder);
+  
+  // 发送 RabbitMQ 事件（异步，不阻塞响应）
+  sendOrderEvent("ORDER_PAID", paidOrder).catch(err => {
+    logger.error("发送 MQ 事件失败", { error: err.message });
+  });
+  
   console.log(`[订单支付] ${order.id} - 金额: ${order.amount}`);
   res.json({ order: paidOrder });
 });
@@ -270,7 +304,6 @@ app.post("/api/orders/:orderId/cancel", requireAuth(), async (req, res) => {
     return;
   }
   
-  // 允许取消 PENDING_PAYMENT 状态的订单（包括已超时的）
   if (order.status !== "PENDING_PAYMENT") {
     res.json({ order });
     return;
@@ -287,18 +320,76 @@ app.post("/api/orders/:orderId/cancel", requireAuth(), async (req, res) => {
     row.cancelledAt = new Date().toISOString();
   });
   
+  // 记录取消日志
+  orderLogger.cancelled(cancelledOrder, cancelledOrder.cancelReason);
+  
+  // 创建 Outbox 事件
+  createOutboxEvent("ORDER_CANCELLED", cancelledOrder.id, cancelledOrder);
+  
+  // 发送 RabbitMQ 事件
+  sendOrderEvent("ORDER_CANCELLED", cancelledOrder).catch(err => {
+    logger.error("发送 MQ 事件失败", { error: err.message });
+  });
+  
   console.log(`[订单取消] ${order.id}`);
   res.json({ order: cancelledOrder });
+});
+
+// Outbox 状态查询接口（演示用）
+app.get("/api/outbox/stats", (_req, res) => {
+  const outbox = require("./src/outboxService").readOutbox();
+  const pending = outbox.events.filter(e => e.status === "pending");
+  const sent = outbox.events.filter(e => e.status === "sent");
+  res.json({
+    total: outbox.events.length,
+    pending: pending.length,
+    sent: sent.length,
+    events: outbox.events.slice(-10) // 最近10条
+  });
+});
+
+// 日志统计接口（演示用）
+app.get("/api/logs/stats", (_req, res) => {
+  const fs = require("fs");
+  const logPath = path.join(__dirname, "logs", "orders.log");
+  let logCount = 0;
+  try {
+    if (fs.existsSync(logPath)) {
+      const content = fs.readFileSync(logPath, "utf-8");
+      logCount = content.trim().split("\n").filter(l => l.trim()).length;
+    }
+  } catch(e) {}
+  res.json({
+    logFile: "logs/orders.log",
+    logCount: logCount,
+    format: "JSON structured"
+  });
+});
+
+// 启动时连接 RabbitMQ（非阻塞，失败不影响主服务）
+connectRabbitMQ().then(connected => {
+  if (connected) {
+    console.log("RabbitMQ 已连接，事件将实时发送");
+  } else {
+    console.log("RabbitMQ 未连接，事件将保存在 Outbox 中，等待重试");
+  }
+}).catch(err => {
+  console.log("RabbitMQ 连接失败:", err.message);
 });
 
 app.listen(PORT, () => {
   console.log(`
 ╔══════════════════════════════════════════════════════════╗
-║     🎬 影院订票系统 - 订单支付模块（独立服务器）        ║
+║           影院订票系统 - 订单支付模块（独立服务器）         ║
 ╠══════════════════════════════════════════════════════════╣
 ║  访问地址: http://localhost:${PORT}                      ║
 ║  订单页面: http://localhost:${PORT}/orders.html          ║
 ║  登录页面: http://localhost:${PORT}/login.html           ║
+╠══════════════════════════════════════════════════════════╣
+║  已集成技术:                                             ║
+║      Slf4j/Logback - 结构化JSON日志                      ║
+║      Outbox Pattern - 发件箱模式保证一致性                ║
+║      RabbitMQ - 异步消息队列                              ║
 ╠══════════════════════════════════════════════════════════╣
 ║  测试账号:                                              ║
 ║    用户: user / user123                                 ║
