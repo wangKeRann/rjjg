@@ -300,60 +300,16 @@ app.get("/api/me", requireAuth(), (req, res) => {
   res.json({ user: req.user, permissions: req.auth.permissions, claims: req.auth.claims });
 });
 
-// app.get("/api/movies", async (_req, res) => {
-//   try {
-//     const cachedMovies = await store.getMoviesList();
-//     if (cachedMovies) {
-//       logger.debug("从缓存获取影片列表");
-//       res.json({ movies: cachedMovies, cached: true, source: store.mode });
-//       return;
-//     }
-
-//     const movies = getMovies();
-
-//     await store.cacheMoviesList(movies);
-//     const hotMovies = [...movies].sort((a, b) => b.heat - a.heat).slice(0, 10);
-//     await store.cacheHotMovies(hotMovies);
-//     logger.debug("影片列表与热门影片已写入缓存");
-
-//     res.json({ movies, cached: false, source: store.mode });
-//   } catch (error) {
-//     logger.error({ error: error.message }, "获取影片数据失败");
-//     res.json({ movies: getMovies(), cached: false, error: "缓存服务暂时不可用" });
-//   }
-// });
-
 app.get("/api/movies", async (_req, res) => {
   try {
     const cachedMovies = await store.getMoviesList();
-    const rate = getPriceRate(); // 获取当前倍率
-
     if (cachedMovies) {
       logger.debug("从缓存获取影片列表");
-      // 缓存数据也拼接优惠价
-      const list = cachedMovies.map(movie => {
-        if (movie.shows && Array.isArray(movie.shows)) {
-          movie.shows = movie.shows.map(show => ({
-            ...show,
-            realPrice: (show.price * rate).toFixed(2)
-          }));
-        }
-        return movie;
-      });
-      res.json({ movies: list, cached: true, source: store.mode });
+      res.json({ movies: cachedMovies, cached: true, source: store.mode });
       return;
     }
 
-    const movies = getMovies().map(movie => {
-      // 给每个场次加上优惠价
-      if (movie.shows && Array.isArray(movie.shows)) {
-        movie.shows = movie.shows.map(show => ({
-          ...show,
-          realPrice: (show.price * rate).toFixed(2)
-        }));
-      }
-      return movie;
-    });
+    const movies = getMovies();
 
     await store.cacheMoviesList(movies);
     const hotMovies = [...movies].sort((a, b) => b.heat - a.heat).slice(0, 10);
@@ -363,18 +319,7 @@ app.get("/api/movies", async (_req, res) => {
     res.json({ movies, cached: false, source: store.mode });
   } catch (error) {
     logger.error({ error: error.message }, "获取影片数据失败");
-    const rate = getPriceRate();
-    // 降级分支也补全优惠价
-    const movies = getMovies().map(movie => {
-      if (movie.shows && Array.isArray(movie.shows)) {
-        movie.shows = movie.shows.map(show => ({
-          ...show,
-          realPrice: (show.price * rate).toFixed(2)
-        }));
-      }
-      return movie;
-    });
-    res.json({ movies: movies, cached: false, error: "缓存服务暂时不可用" });
+    res.json({ movies: getMovies(), cached: false, error: "缓存服务暂时不可用" });
   }
 });
 
@@ -721,7 +666,7 @@ app.get("/api/my/orders", requirePermission("order:read:self"), (req, res) => {
   res.json({ orders: rows });
 });
 
-// 修复 /api/admin/dashboard 接口
+
 app.get("/api/admin/dashboard", requirePermission("admin:dashboard"), async (_req, res, next) => {
   try {
     const originData = await buildAdminDashboard();
@@ -793,10 +738,13 @@ app.patch("/api/admin/shows/:showId/price", requirePermission("show:price:update
 
 // ========== Nacos新增接口 ==========
 // 获取当前Nacos配置
-app.get('/api/admin/nacos-config', requirePermission("admin:dashboard"), (req, res) => {
+app.get('/api/admin/nacos-config', requirePermission("admin:dashboard"), async (req, res) => {
+  //每次请求都调用 refreshConfig() 从 Nacos 拉取最新值
+  await nacos.refreshConfig();
   res.json(nacos.getConfig());
 });
-app.patch('/api/admin/nacos-price-rate', (req, res) => {
+
+app.patch('/api/admin/nacos-price-rate', async (req, res) => {
   try {
     if (!req.body || typeof req.body !== "object") {
       return res.status(400).json({ error: "无效请求体" });
@@ -807,8 +755,7 @@ app.patch('/api/admin/nacos-price-rate', (req, res) => {
       return res.status(400).json({ error: "无效倍率，需在 0.1-2 之间" });
     }
 
-    //更新配置
-    nacos.publishConfig({ priceRate });
+    await nacos.publishConfig({ priceRate });
     console.log("[Nacos] 票价倍率已变更，当前倍率：", nacos.getConfig().priceRate);
 
     res.json({
@@ -822,9 +769,7 @@ app.patch('/api/admin/nacos-price-rate', (req, res) => {
   }
 });
 
-nacos.subscribe(cfg => {
-  console.log("[Nacos] 票价倍率已变更，当前倍率：", cfg.priceRate);
-});
+
 // ==========================================================
 
 // 缓存统计API

@@ -9,6 +9,7 @@ createApp({
       dashboard: null,
       priceDrafts: {},
       notice: "",
+      configTimer: null
     };
   },
   computed: {
@@ -19,20 +20,37 @@ createApp({
   async mounted() {
     this.session = getSession();
     if (this.isAdmin) {
-      // 页面加载时拉取当前Nacos配置，同步到输入框
-      try {
-        const config = await apiFetch("/api/admin/nacos-config", { headers: authHeaders() });
-        const rateInput = document.getElementById('priceRate');
-        if (rateInput && config.priceRate != null) {
-          rateInput.value = config.priceRate;
-        }
-      } catch (e) {
-        console.log("读取配置失败", e);
-      }
+      await this.refreshPriceRate();
       await this.loadDashboard();
+      this.configTimer = setInterval(() => {
+        console.log("⏱️ 执行轮询，拉取最新倍率...");
+        this.refreshPriceRate();
+      }, 5000);
+    }
+  },
+  beforeUnmount() {
+    if (this.configTimer) {
+      clearInterval(this.configTimer);
     }
   },
   methods: {
+    async refreshPriceRate() {
+      try {
+        const config = await apiFetch("/api/admin/nacos-config", { headers: authHeaders() });
+        console.log("📥 从后端拉到的配置：", config);
+        const rateInput = document.getElementById('priceRate');
+        if (rateInput && config.priceRate != null) {
+          rateInput.value = config.priceRate;
+          rateInput.dispatchEvent(new Event('input'));
+          console.log("✅ 前端输入框已更新为：", config.priceRate);
+          // 更新倍率后，重新加载一次价格列表
+          await this.loadDashboard();
+        }
+      } catch (e) {
+        console.error("❌ 读取配置失败", e);
+      }
+    },
+
     async loadDashboard() {
       if (!this.isAdmin) return;
       this.notice = "正在从从库加载数据...";
