@@ -2,7 +2,7 @@
   "meta": {
     "version": 1,
     "createdAt": "2026-06-09T00:00:00.000Z",
-    "updatedAt": "2026-06-10T07:45:46.814Z"
+    "updatedAt": "2026-06-10T16:00:06.634Z"
   },
   "events": [
     {
@@ -101,6 +101,106 @@
       "maxRetries": 3,
       "createdAt": "2026-06-10T07:45:46.813Z",
       "sentAt": null,
+      "lastError": null
+    },
+    {
+      "id": "8f421709-0347-4a1f-94df-2a408efeb4d7",
+      "eventType": "ORDER_CREATED",
+      "aggregateId": "17bd8b9a-ceeb-4601-9d90-ead46d4984fa",
+      "payload": {
+        "id": "17bd8b9a-ceeb-4601-9d90-ead46d4984fa",
+        "showId": "s1",
+        "movieTitle": "星际回声",
+        "cinema": "云上影城 · 星环店",
+        "hall": "IMAX 1号厅",
+        "startsAt": "2026-06-04 19:30",
+        "seats": [
+          "A5"
+        ],
+        "userId": "u1002",
+        "userName": "普通用户",
+        "amount": 58,
+        "status": "PENDING_PAYMENT",
+        "createdAt": "2026-06-10T15:59:49.235Z",
+        "expiresAt": "2026-06-10T16:01:49.235Z",
+        "timestamp": "2026-06-10T15:59:49.289Z"
+      },
+      "metadata": {
+        "version": 1,
+        "source": "cinema-ticket-system"
+      },
+      "status": "pending",
+      "retryCount": 0,
+      "maxRetries": 3,
+      "createdAt": "2026-06-10T15:59:49.289Z",
+      "sentAt": null,
+      "lastError": null
+    },
+    {
+      "id": "4d0dc6da-835f-4db5-be1e-3a0da4b78177",
+      "eventType": "ORDER_CANCELLED",
+      "aggregateId": "17bd8b9a-ceeb-4601-9d90-ead46d4984fa",
+      "payload": {
+        "id": "17bd8b9a-ceeb-4601-9d90-ead46d4984fa",
+        "showId": "s1",
+        "movieTitle": "星际回声",
+        "cinema": "云上影城 · 星环店",
+        "hall": "IMAX 1号厅",
+        "startsAt": "2026-06-04 19:30",
+        "seats": [
+          "A5"
+        ],
+        "userId": "u1002",
+        "userName": "普通用户",
+        "amount": 58,
+        "status": "CANCELLED",
+        "createdAt": "2026-06-10T15:59:49.235Z",
+        "expiresAt": "2026-06-10T16:01:49.235Z",
+        "cancelReason": "USER_CANCELLED",
+        "cancelledAt": "2026-06-10T16:00:06.601Z",
+        "timestamp": "2026-06-10T16:00:06.603Z"
+      },
+      "metadata": {
+        "version": 1,
+        "source": "cinema-ticket-system"
+      },
+      "status": "pending",
+      "retryCount": 0,
+      "maxRetries": 3,
+      "createdAt": "2026-06-10T16:00:06.603Z",
+      "sentAt": null,
+      "lastError": null
+    },
+    {
+      "id": "043760ba-3b3f-44ec-b0ec-07c0f3d85fd4",
+      "eventType": "ORDER_CANCELLED",
+      "aggregateId": "17bd8b9a-ceeb-4601-9d90-ead46d4984fa",
+      "payload": {
+        "eventType": "ORDER_CANCELLED",
+        "orderId": "17bd8b9a-ceeb-4601-9d90-ead46d4984fa",
+        "userId": "u1002",
+        "userName": "普通用户",
+        "amount": 58,
+        "seats": [
+          "A5"
+        ],
+        "showId": "s1",
+        "movieTitle": "星际回声",
+        "cinema": "云上影城 · 星环店",
+        "status": "CANCELLED",
+        "cancelledAt": "2026-06-10T16:00:06.601Z",
+        "cancelReason": "USER_CANCELLED",
+        "timestamp": "2026-06-10T16:00:06.606Z"
+      },
+      "metadata": {
+        "version": 1,
+        "source": "cinema-ticket-system"
+      },
+      "status": "sent",
+      "retryCount": 0,
+      "maxRetries": 3,
+      "createdAt": "2026-06-10T16:00:06.606Z",
+      "sentAt": "2026-06-10T16:00:06.634Z",
       "lastError": null
     }
   ]
